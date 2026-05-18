@@ -97,6 +97,7 @@ The integration auto-detects when you've finished picking and swaps in the new p
 - **"Selection not detected yet"** — confirm your pick inside Google Photos first; the integration only sees the selection after you finish in the picker.
 - **No image bytes / 401 errors** — your refresh token may have been revoked; remove the integration and re-add.
 - **"Picker session expired"** notification — sessions live ~24h; press Re-pick to start fresh.
+- **"Re-authentication required" banner in HA** — Google revokes OAuth refresh tokens for apps in *Testing* mode roughly every 7 days, and any user can manually revoke at <https://myaccount.google.com/permissions>. When this happens HA detects the 401 from Google, marks the entry as needing reauth, and shows a yellow banner on the integrations page. Click **Reconfigure** there to sign in again — your photo selection is preserved.
 - **App stuck in "verification needed"** by Google — for personal use leave the consent screen in *Testing* mode and add yourself as a Test user; that bypasses verification.
 
 ## Credits & prior art

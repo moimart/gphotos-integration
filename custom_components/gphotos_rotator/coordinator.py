@@ -9,13 +9,14 @@ from typing import Any
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 from homeassistant.util import dt as dt_util
 
-from .api import PickerApiError, PickerClient, SessionExpiredError
+from .api import AuthError, PickerApiError, PickerClient, SessionExpiredError
 from .const import (
     BASE_URL_TTL_SECONDS,
     CONF_INTERVAL,
@@ -92,6 +93,10 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
 
         try:
             data = await self.client.download_bytes(base_url, DEFAULT_IMAGE_SIZE)
+        except AuthError as err:
+            raise ConfigEntryAuthFailed(
+                "Google rejected the OAuth token"
+            ) from err
         except PickerApiError as err:
             raise UpdateFailed(f"Image download failed: {err}") from err
 
@@ -114,6 +119,10 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             return
         try:
             items = await self.client.list_media_items(self.session_id)
+        except AuthError as err:
+            raise ConfigEntryAuthFailed(
+                "Google rejected the OAuth token"
+            ) from err
         except SessionExpiredError:
             self._notify_session_expired()
             raise UpdateFailed(

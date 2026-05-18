@@ -13,6 +13,10 @@
       "pick_media": {
         "title": "Pick photos",
         "description": "1. Open the [Google Photos Picker]({picker_uri}) in your browser **while signed in to the same Google account**.\n2. Select the photos or album you want to rotate.\n3. Confirm your selection in Google Photos.\n4. Come back here and press **Submit**.\n\nIf you press Submit before confirming in Google Photos, you'll be asked to try again."
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate with Google Photos",
+        "description": "Your Google Photos access has expired or been revoked (Google revokes tokens for apps in Testing mode roughly every 7 days). Press **Submit** to sign in again. Your existing photo selection is preserved."
       }
     },
     "error": {
@@ -33,7 +37,9 @@
       "list_items_failed": "Failed to list picked media items.",
       "no_items_picked": "No items were picked in the Google Photos Picker.",
       "token_refresh_failed": "Could not refresh OAuth token. Remove and re-add the integration.",
-      "reconfigure_successful": "New photo selection saved."
+      "reconfigure_successful": "New photo selection saved.",
+      "reauth_successful": "Re-authentication successful.",
+      "wrong_account": "Re-authentication must use the same Google account."
     },
     "create_entry": {
       "default": "Successfully authenticated with Google Photos."

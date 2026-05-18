@@ -21,6 +21,10 @@ class SessionExpiredError(PickerApiError):
     """Raised when the picker session is no longer valid."""
 
 
+class AuthError(PickerApiError):
+    """Raised on 401/403 — OAuth token revoked or insufficient scope."""
+
+
 class PickerClient:
     """Wraps the Photos Picker REST endpoints using an HA OAuth2 session."""
 
@@ -33,6 +37,8 @@ class PickerClient:
         self, method: str, url: str, **kwargs: Any
     ) -> Any:
         resp = await self._session.async_request(method, url, **kwargs)
+        if resp.status in (401, 403):
+            raise AuthError(f"{method} {url} -> HTTP {resp.status}")
         if resp.status == 404:
             raise SessionExpiredError(f"{method} {url} -> 404")
         if resp.status >= 400:
@@ -79,6 +85,8 @@ class PickerClient:
     async def download_bytes(self, base_url: str, size_suffix: str) -> bytes:
         url = f"{base_url}{size_suffix}"
         resp = await self._session.async_request("GET", url)
+        if resp.status in (401, 403):
+            raise AuthError(f"Download {url} -> HTTP {resp.status}")
         if resp.status >= 400:
             raise PickerApiError(
                 f"Download {url} -> HTTP {resp.status}"

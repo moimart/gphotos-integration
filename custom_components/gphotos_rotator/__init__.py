@@ -4,14 +4,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from aiohttp import ClientError, ClientResponseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_entry_oauth2_flow, entity_registry as er
 import voluptuous as vol
 
-from .api import PickerApiError, PickerClient
+from .api import AuthError, PickerClient
 from .const import DOMAIN, SERVICE_NEXT, SERVICE_REPICK
 from .coordinator import GPhotosCoordinator
 
@@ -46,8 +47,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     try:
         await oauth_session.async_ensure_token_valid()
-    except PickerApiError as err:
+    except ClientResponseError as err:
+        if 400 <= err.status < 500:
+            raise ConfigEntryAuthFailed(
+                "OAuth refresh rejected — reauthentication required"
+            ) from err
         raise ConfigEntryNotReady(f"Token refresh failed: {err}") from err
+    except ClientError as err:
+        raise ConfigEntryNotReady(f"Token refresh network error: {err}") from err
 
     client = PickerClient(oauth_session)
     coordinator = GPhotosCoordinator(hass, entry, client)

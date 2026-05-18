@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import SOURCE_RECONFIGURE, ConfigFlowResult
+from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    SOURCE_RECONFIGURE,
+    ConfigFlowResult,
+)
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.util import dt as dt_util
 
@@ -52,8 +57,29 @@ class GPhotosOAuth2FlowHandler(
     async def async_oauth_create_entry(
         self, data: dict[str, Any]
     ) -> ConfigFlowResult:
+        if self.source == SOURCE_REAUTH:
+            entry = self._get_reauth_entry()
+            new_data = {**entry.data, **data}
+            return self.async_update_reload_and_abort(
+                entry, data=new_data, reason="reauth_successful"
+            )
         self._oauth_data = data
         return await self.async_step_pick_media()
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Triggered by HA when ConfigEntryAuthFailed is raised."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reauth_confirm", data_schema=vol.Schema({})
+            )
+        return await self.async_step_user()
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
