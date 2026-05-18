@@ -1,0 +1,104 @@
+{
+  "application_credentials": {
+    "description": "Follow the [Google Photos Picker setup instructions]({more_info_url}) to create an OAuth client ID. Use redirect URI: `{redirect_url}`. After creating credentials at {oauth_creds_url}, enter the Client ID and Client Secret below."
+  },
+  "config": {
+    "step": {
+      "pick_account": {
+        "title": "Link Google Account"
+      },
+      "auth": {
+        "title": "Authorize Home Assistant"
+      },
+      "pick_media": {
+        "title": "Pick photos",
+        "description": "1. Open the [Google Photos Picker]({picker_uri}) in your browser **while signed in to the same Google account**.\n2. Select the photos or album you want to rotate.\n3. Confirm your selection in Google Photos.\n4. Come back here and press **Submit**.\n\nIf you press Submit before confirming in Google Photos, you'll be asked to try again."
+      }
+    },
+    "error": {
+      "picker_not_ready": "Selection not detected yet. Confirm your photo selection in Google Photos, then press Submit again.",
+      "picker_session_failed": "Could not communicate with Google Photos Picker. Check your network and try again."
+    },
+    "abort": {
+      "already_configured": "Account is already configured",
+      "oauth_error": "Received invalid token data.",
+      "oauth_failed": "Error while obtaining access token.",
+      "oauth_timeout": "Timeout resolving OAuth token.",
+      "oauth_unauthorized": "OAuth authorization error while obtaining access token.",
+      "missing_configuration": "The component is not configured. Please follow the documentation.",
+      "authorize_url_timeout": "Timeout generating authorize URL.",
+      "no_url_available": "No URL available. For information about this error, [check the help section]({docs_url}).",
+      "user_rejected_authorize": "Account linking rejected: {error}",
+      "picker_session_failed": "Failed to create a Google Photos Picker session.",
+      "list_items_failed": "Failed to list picked media items.",
+      "no_items_picked": "No items were picked in the Google Photos Picker."
+    },
+    "create_entry": {
+      "default": "Successfully authenticated with Google Photos."
+    }
+  },
+  "selector": {
+    "order": {
+      "options": {
+        "random": "Random",
+        "sequential": "Sequential"
+      }
+    }
+  },
+  "entity": {
+    "image": {
+      "next_photo": {
+        "name": "Next photo"
+      }
+    },
+    "number": {
+      "interval": {
+        "name": "Rotation interval"
+      }
+    },
+    "select": {
+      "order": {
+        "name": "Order",
+        "state": {
+          "random": "Random",
+          "sequential": "Sequential"
+        }
+      }
+    },
+    "button": {
+      "next_button": {
+        "name": "Next photo now"
+      },
+      "repick_button": {
+        "name": "Re-pick photos"
+      }
+    },
+    "sensor": {
+      "media_count": {
+        "name": "Media count"
+      }
+    }
+  },
+  "services": {
+    "next": {
+      "name": "Next photo",
+      "description": "Immediately rotate to the next photo.",
+      "fields": {
+        "entity_id": {
+          "name": "Image entity",
+          "description": "The image entity to rotate."
+        }
+      }
+    },
+    "repick": {
+      "name": "Re-pick photos",
+      "description": "Start a new Google Photos picker session to select a fresh set of photos.",
+      "fields": {
+        "entity_id": {
+          "name": "Image entity",
+          "description": "The image entity belonging to the instance you want to re-pick for."
+        }
+      }
+    }
+  }
+}

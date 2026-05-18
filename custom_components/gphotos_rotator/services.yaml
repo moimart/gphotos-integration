@@ -1,0 +1,25 @@
+next:
+  name: Next photo
+  description: Immediately rotate to the next photo.
+  fields:
+    entity_id:
+      name: Image entity
+      description: The image entity to rotate.
+      required: true
+      selector:
+        entity:
+          domain: image
+          integration: gphotos_rotator
+
+repick:
+  name: Re-pick photos
+  description: Start a new Google Photos picker session to select a fresh set of photos.
+  fields:
+    entity_id:
+      name: Image entity
+      description: The image entity belonging to the instance you want to re-pick for.
+      required: true
+      selector:
+        entity:
+          domain: image
+          integration: gphotos_rotator

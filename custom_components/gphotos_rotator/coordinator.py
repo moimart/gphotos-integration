@@ -1,0 +1,273 @@
+"""Rotation coordinator for Google Photos Rotator."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+from datetime import datetime, timedelta
+from typing import Any
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import persistent_notification
+from homeassistant.helpers.update_coordinator import (
+    DataUpdateCoordinator,
+    UpdateFailed,
+)
+from homeassistant.util import dt as dt_util
+
+from .api import PickerApiError, PickerClient, SessionExpiredError
+from .const import (
+    BASE_URL_TTL_SECONDS,
+    CONF_INTERVAL,
+    CONF_MEDIA_ITEMS,
+    CONF_ORDER,
+    DEFAULT_IMAGE_SIZE,
+    DEFAULT_INTERVAL,
+    DEFAULT_ORDER,
+    DOMAIN,
+    ORDER_RANDOM,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+_REPICK_POLL_INTERVAL = 5
+_REPICK_TIMEOUT = 15 * 60
+
+
+def _items_fetched_at_from_entry(entry: ConfigEntry) -> datetime:
+    raw = entry.data.get("items_fetched_at")
+    if raw:
+        parsed = dt_util.parse_datetime(raw)
+        if parsed:
+            return parsed
+    return dt_util.utcnow()
+
+
+class GPhotosCoordinator(DataUpdateCoordinator[None]):
+    """Picks a new media item on each tick and refreshes its bytes."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: PickerClient,
+    ) -> None:
+        self.entry = entry
+        self.client = client
+        self.session_id: str = entry.data["session_id"]
+        self.media_items: list[dict[str, Any]] = list(
+            entry.data.get(CONF_MEDIA_ITEMS, [])
+        )
+        self.items_fetched_at: datetime = _items_fetched_at_from_entry(entry)
+        self.interval: int = entry.options.get(CONF_INTERVAL, DEFAULT_INTERVAL)
+        self.order: str = entry.options.get(CONF_ORDER, DEFAULT_ORDER)
+        self.current_index: int = -1
+        self.current_item: dict[str, Any] | None = None
+        self.current_bytes: bytes | None = None
+        self.image_last_updated: datetime | None = None
+        self.image_content_type: str = "image/jpeg"
+        self._repick_task: asyncio.Task | None = None
+        self._repick_notification_id: str | None = None
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN} ({entry.title})",
+            update_interval=timedelta(seconds=self.interval),
+        )
+
+    async def _async_update_data(self) -> None:
+        if not self.media_items:
+            raise UpdateFailed("No picked media items")
+        await self._rotate()
+
+    async def async_rotate_now(self) -> None:
+        await self._rotate()
+        self.async_update_listeners()
+
+    async def _rotate(self) -> None:
+        await self._ensure_fresh_base_urls()
+        index = self._pick_next_index()
+        item = self.media_items[index]
+        media_file = item.get("mediaFile", {})
+        base_url = media_file.get("baseUrl")
+        if not base_url:
+            raise UpdateFailed(f"Item {item.get('id')} missing baseUrl")
+
+        try:
+            data = await self.client.download_bytes(base_url, DEFAULT_IMAGE_SIZE)
+        except PickerApiError as err:
+            raise UpdateFailed(f"Image download failed: {err}") from err
+
+        self.current_index = index
+        self.current_item = item
+        self.current_bytes = data
+        self.image_content_type = media_file.get("mimeType") or "image/jpeg"
+        self.image_last_updated = dt_util.utcnow()
+
+    def _pick_next_index(self) -> int:
+        count = len(self.media_items)
+        if self.order == ORDER_RANDOM and count > 1:
+            choices = [i for i in range(count) if i != self.current_index]
+            return random.choice(choices)
+        return (self.current_index + 1) % count
+
+    async def _ensure_fresh_base_urls(self) -> None:
+        age = (dt_util.utcnow() - self.items_fetched_at).total_seconds()
+        if age < BASE_URL_TTL_SECONDS:
+            return
+        try:
+            items = await self.client.list_media_items(self.session_id)
+        except SessionExpiredError:
+            self._notify_session_expired()
+            raise UpdateFailed(
+                "Picker session expired; re-pick required"
+            )
+        except PickerApiError as err:
+            raise UpdateFailed(f"Failed to refresh media items: {err}") from err
+
+        if not items:
+            raise UpdateFailed("Refreshed media list is empty")
+
+        self.media_items = items
+        self.items_fetched_at = dt_util.utcnow()
+        self._persist_items()
+
+    def _persist_items(self) -> None:
+        new_data = {
+            **self.entry.data,
+            CONF_MEDIA_ITEMS: self.media_items,
+            "items_fetched_at": self.items_fetched_at.isoformat(),
+        }
+        self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+
+    def _notify_session_expired(self) -> None:
+        persistent_notification.async_create(
+            self.hass,
+            (
+                "Your Google Photos picker session has expired. "
+                "Press the **Re-pick photos** button on the integration to "
+                "select photos again."
+            ),
+            title="Google Photos Rotator",
+            notification_id=f"{DOMAIN}_session_expired_{self.entry.entry_id}",
+        )
+
+    # ----- interval / order management -----
+
+    async def async_set_interval(self, seconds: int) -> None:
+        self.interval = seconds
+        self.update_interval = timedelta(seconds=seconds)
+        new_options = {**self.entry.options, CONF_INTERVAL: seconds}
+        self.hass.config_entries.async_update_entry(
+            self.entry, options=new_options
+        )
+        # Reschedule the timer with the new interval.
+        self._schedule_refresh()
+
+    async def async_set_order(self, order: str) -> None:
+        self.order = order
+        new_options = {**self.entry.options, CONF_ORDER: order}
+        self.hass.config_entries.async_update_entry(
+            self.entry, options=new_options
+        )
+
+    # ----- repick flow -----
+
+    async def async_start_repick(self) -> None:
+        if self._repick_task and not self._repick_task.done():
+            _LOGGER.info("Re-pick already in progress")
+            return
+        try:
+            session = await self.client.create_session()
+        except PickerApiError as err:
+            persistent_notification.async_create(
+                self.hass,
+                f"Failed to start picker session: {err}",
+                title="Google Photos Rotator",
+                notification_id=f"{DOMAIN}_repick_error_{self.entry.entry_id}",
+            )
+            return
+
+        session_id = session["id"]
+        picker_uri = session["pickerUri"]
+        self._repick_notification_id = (
+            f"{DOMAIN}_repick_{self.entry.entry_id}"
+        )
+        persistent_notification.async_create(
+            self.hass,
+            (
+                f"[Open Google Photos Picker]({picker_uri})\n\n"
+                "Select the photos you want to rotate, then this notification "
+                "will dismiss automatically once your selection is detected."
+            ),
+            title="Google Photos Rotator — Pick photos",
+            notification_id=self._repick_notification_id,
+        )
+        self._repick_task = self.hass.async_create_task(
+            self._poll_repick(session_id)
+        )
+
+    async def _poll_repick(self, session_id: str) -> None:
+        deadline = dt_util.utcnow() + timedelta(seconds=_REPICK_TIMEOUT)
+        try:
+            while dt_util.utcnow() < deadline:
+                await asyncio.sleep(_REPICK_POLL_INTERVAL)
+                try:
+                    session = await self.client.get_session(session_id)
+                except SessionExpiredError:
+                    self._repick_failed("Picker session expired before selection.")
+                    return
+                except PickerApiError as err:
+                    _LOGGER.warning("Picker poll error: %s", err)
+                    continue
+                if session.get("mediaItemsSet"):
+                    await self._finalize_repick(session_id)
+                    return
+            self._repick_failed("Picker session timed out.")
+        finally:
+            self._repick_task = None
+
+    async def _finalize_repick(self, session_id: str) -> None:
+        try:
+            items = await self.client.list_media_items(session_id)
+        except PickerApiError as err:
+            self._repick_failed(f"Failed to list picked items: {err}")
+            return
+        if not items:
+            self._repick_failed("No items were picked.")
+            return
+
+        old_session = self.session_id
+        self.session_id = session_id
+        self.media_items = items
+        self.items_fetched_at = dt_util.utcnow()
+        self.current_index = -1
+        new_data = {
+            **self.entry.data,
+            "session_id": session_id,
+            CONF_MEDIA_ITEMS: items,
+            "items_fetched_at": self.items_fetched_at.isoformat(),
+        }
+        self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+        if self._repick_notification_id:
+            persistent_notification.async_dismiss(
+                self.hass, self._repick_notification_id
+            )
+            self._repick_notification_id = None
+        await self.client.delete_session(old_session)
+        await self.async_request_refresh()
+
+    def _repick_failed(self, message: str) -> None:
+        if self._repick_notification_id:
+            persistent_notification.async_dismiss(
+                self.hass, self._repick_notification_id
+            )
+            self._repick_notification_id = None
+        persistent_notification.async_create(
+            self.hass,
+            message,
+            title="Google Photos Rotator",
+            notification_id=f"{DOMAIN}_repick_failed_{self.entry.entry_id}",
+        )
