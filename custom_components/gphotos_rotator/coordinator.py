@@ -73,6 +73,7 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=f"{DOMAIN} ({entry.title})",
             update_interval=timedelta(seconds=self.interval),
         )

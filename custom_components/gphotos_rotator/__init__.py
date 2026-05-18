@@ -32,14 +32,10 @@ class GPhotosData:
     client: PickerClient
 
 
-type GPhotosConfigEntry = ConfigEntry[GPhotosData]
-
 SERVICE_SCHEMA = vol.Schema({vol.Required("entity_id"): str})
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: GPhotosConfigEntry
-) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     implementation = (
         await config_entry_oauth2_flow.async_get_config_entry_implementation(
             hass, entry
@@ -63,9 +59,7 @@ async def async_setup_entry(
     return True
 
 
-async def async_unload_entry(
-    hass: HomeAssistant, entry: GPhotosConfigEntry
-) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
