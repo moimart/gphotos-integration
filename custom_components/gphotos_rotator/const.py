@@ -15,8 +15,11 @@ CONF_MEDIA_ITEMS = "media_items"
 CONF_INTERVAL = "interval"
 CONF_ORDER = "order"
 
+# Picker API quota is 10,000 requests/day per project. With one image
+# download per tick + ~29 baseUrl-refresh list calls/day, intervals below
+# 9s would exceed the quota.
 DEFAULT_INTERVAL = 60
-MIN_INTERVAL = 5
+MIN_INTERVAL = 9
 MAX_INTERVAL = 86400
 
 ORDER_RANDOM = "random"

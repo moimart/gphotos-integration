@@ -9,7 +9,7 @@ Uses the new **Google Photos Picker API** with OAuth2 via `my.home-assistant.io`
 | Entity | Purpose |
 |---|---|
 | `image.<instance>_next_photo` | Currently displayed photo. Updates each rotation. |
-| `number.<instance>_rotation_interval` | Rotation interval in seconds. Default 60, min 5, max 86400. |
+| `number.<instance>_rotation_interval` | Rotation interval in seconds. Default 60, min 9, max 86400. Min is set so daily traffic stays under the Picker API's 10k req/day quota. |
 | `select.<instance>_order` | `random` or `sequential`. |
 | `button.<instance>_next_photo_now` | Immediately rotate. |
 | `button.<instance>_re_pick_photos` | Start a new picker session to select a fresh photo set. |
