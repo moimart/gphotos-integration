@@ -1,7 +1,6 @@
 """Rotation coordinator for Google Photos Rotator."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import random
 from datetime import datetime, timedelta
@@ -30,9 +29,6 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-_REPICK_POLL_INTERVAL = 5
-_REPICK_TIMEOUT = 15 * 60
 
 
 def _items_fetched_at_from_entry(entry: ConfigEntry) -> datetime:
@@ -67,8 +63,6 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         self.current_bytes: bytes | None = None
         self.image_last_updated: datetime | None = None
         self.image_content_type: str = "image/jpeg"
-        self._repick_task: asyncio.Task | None = None
-        self._repick_notification_id: str | None = None
 
         super().__init__(
             hass,
@@ -177,98 +171,33 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
     # ----- repick flow -----
 
     async def async_start_repick(self) -> None:
-        if self._repick_task and not self._repick_task.done():
-            _LOGGER.info("Re-pick already in progress")
-            return
-        try:
-            session = await self.client.create_session()
-        except PickerApiError as err:
-            persistent_notification.async_create(
-                self.hass,
-                f"Failed to start picker session: {err}",
-                title="Google Photos Rotator",
-                notification_id=f"{DOMAIN}_repick_error_{self.entry.entry_id}",
-            )
-            return
+        """Kick off the reconfigure flow so the user gets a proper modal.
 
-        session_id = session["id"]
-        picker_uri = session["pickerUri"]
-        self._repick_notification_id = (
-            f"{DOMAIN}_repick_{self.entry.entry_id}"
+        We can't pop a browser window from the backend, so the cleanest UX
+        is to push the user into the integration's Configure dialog, which
+        runs `async_step_reconfigure` — that step creates the picker session
+        and shows its URL inside a normal HA flow modal.
+        """
+        from homeassistant.config_entries import SOURCE_RECONFIGURE
+
+        self.hass.async_create_task(
+            self.hass.config_entries.flow.async_init(
+                DOMAIN,
+                context={
+                    "source": SOURCE_RECONFIGURE,
+                    "entry_id": self.entry.entry_id,
+                    "title_placeholders": {"name": self.entry.title},
+                },
+            )
         )
         persistent_notification.async_create(
             self.hass,
             (
-                f"[Open Google Photos Picker]({picker_uri})\n\n"
-                "Select the photos you want to rotate, then this notification "
-                "will dismiss automatically once your selection is detected."
+                "Open **[Settings → Devices & services]"
+                "(/config/integrations/integration/" + DOMAIN + ")**, "
+                f"find **{self.entry.title}**, and press **Configure** to "
+                "select new photos."
             ),
-            title="Google Photos Rotator — Pick photos",
-            notification_id=self._repick_notification_id,
-        )
-        self._repick_task = self.hass.async_create_task(
-            self._poll_repick(session_id)
-        )
-
-    async def _poll_repick(self, session_id: str) -> None:
-        deadline = dt_util.utcnow() + timedelta(seconds=_REPICK_TIMEOUT)
-        try:
-            while dt_util.utcnow() < deadline:
-                await asyncio.sleep(_REPICK_POLL_INTERVAL)
-                try:
-                    session = await self.client.get_session(session_id)
-                except SessionExpiredError:
-                    self._repick_failed("Picker session expired before selection.")
-                    return
-                except PickerApiError as err:
-                    _LOGGER.warning("Picker poll error: %s", err)
-                    continue
-                if session.get("mediaItemsSet"):
-                    await self._finalize_repick(session_id)
-                    return
-            self._repick_failed("Picker session timed out.")
-        finally:
-            self._repick_task = None
-
-    async def _finalize_repick(self, session_id: str) -> None:
-        try:
-            items = await self.client.list_media_items(session_id)
-        except PickerApiError as err:
-            self._repick_failed(f"Failed to list picked items: {err}")
-            return
-        if not items:
-            self._repick_failed("No items were picked.")
-            return
-
-        old_session = self.session_id
-        self.session_id = session_id
-        self.media_items = items
-        self.items_fetched_at = dt_util.utcnow()
-        self.current_index = -1
-        new_data = {
-            **self.entry.data,
-            "session_id": session_id,
-            CONF_MEDIA_ITEMS: items,
-            "items_fetched_at": self.items_fetched_at.isoformat(),
-        }
-        self.hass.config_entries.async_update_entry(self.entry, data=new_data)
-        if self._repick_notification_id:
-            persistent_notification.async_dismiss(
-                self.hass, self._repick_notification_id
-            )
-            self._repick_notification_id = None
-        await self.client.delete_session(old_session)
-        await self.async_request_refresh()
-
-    def _repick_failed(self, message: str) -> None:
-        if self._repick_notification_id:
-            persistent_notification.async_dismiss(
-                self.hass, self._repick_notification_id
-            )
-            self._repick_notification_id = None
-        persistent_notification.async_create(
-            self.hass,
-            message,
-            title="Google Photos Rotator",
-            notification_id=f"{DOMAIN}_repick_failed_{self.entry.entry_id}",
+            title="Google Photos Rotator — Re-pick photos",
+            notification_id=f"{DOMAIN}_repick_{self.entry.entry_id}",
         )

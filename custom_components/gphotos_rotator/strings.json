@@ -31,7 +31,9 @@
       "user_rejected_authorize": "Account linking rejected: {error}",
       "picker_session_failed": "Failed to create a Google Photos Picker session.",
       "list_items_failed": "Failed to list picked media items.",
-      "no_items_picked": "No items were picked in the Google Photos Picker."
+      "no_items_picked": "No items were picked in the Google Photos Picker.",
+      "token_refresh_failed": "Could not refresh OAuth token. Remove and re-add the integration.",
+      "reconfigure_successful": "New photo selection saved."
     },
     "create_entry": {
       "default": "Successfully authenticated with Google Photos."

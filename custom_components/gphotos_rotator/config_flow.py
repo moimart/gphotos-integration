@@ -6,7 +6,7 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.config_entries import SOURCE_RECONFIGURE, ConfigFlowResult
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.util import dt as dt_util
 
@@ -53,6 +53,35 @@ class GPhotosOAuth2FlowHandler(
         self, data: dict[str, Any]
     ) -> ConfigFlowResult:
         self._oauth_data = data
+        return await self.async_step_pick_media()
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Re-pick photos for an existing entry via the Configure button."""
+        entry = self._get_reconfigure_entry()
+        try:
+            implementation = (
+                await config_entry_oauth2_flow.async_get_config_entry_implementation(
+                    self.hass, entry
+                )
+            )
+        except ValueError as err:
+            _LOGGER.error("OAuth implementation missing: %s", err)
+            return self.async_abort(reason="missing_configuration")
+        oauth_session = config_entry_oauth2_flow.OAuth2Session(
+            self.hass, entry, implementation
+        )
+        try:
+            await oauth_session.async_ensure_token_valid()
+        except Exception as err:  # noqa: BLE001 — token refresh errors vary
+            _LOGGER.error("Token refresh failed during reconfigure: %s", err)
+            return self.async_abort(reason="token_refresh_failed")
+
+        self._oauth_data = {
+            "token": oauth_session.token,
+            "auth_implementation": entry.data.get("auth_implementation"),
+        }
         return await self.async_step_pick_media()
 
     async def async_step_pick_media(
@@ -103,6 +132,20 @@ class GPhotosOAuth2FlowHandler(
 
         if not items:
             return self.async_abort(reason="no_items_picked")
+
+        if self.source == SOURCE_RECONFIGURE:
+            entry = self._get_reconfigure_entry()
+            new_data = {
+                **entry.data,
+                "session_id": self._session_id,
+                CONF_MEDIA_ITEMS: items,
+                "items_fetched_at": dt_util.utcnow().isoformat(),
+            }
+            return self.async_update_reload_and_abort(
+                entry,
+                data=new_data,
+                reason="reconfigure_successful",
+            )
 
         data = {
             **self._oauth_data,

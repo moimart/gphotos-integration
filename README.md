@@ -85,7 +85,12 @@ Open the integration's device page and use the **Rotation interval** number and 
 
 ### Re-picking photos
 
-Press **Re-pick photos** (button or service). A persistent notification will appear with a new picker URL. Open it in a Google-signed-in browser, pick photos, and the integration auto-detects the selection within a few seconds and swaps in the new set.
+Two equivalent paths:
+
+1. **Settings → Devices & services → Google Photos Rotator → Configure** (recommended) — opens a modal dialog with an "Open Google Photos Picker" link. Click it, pick your photos, return, and press Submit. This is the standard HA reconfigure flow.
+2. **`button.<instance>_re_pick_photos`** — the in-dashboard button. Because HA backend integrations can't open browser windows directly, pressing this button programmatically starts the reconfigure flow and posts a persistent notification linking to the Configure dialog above. You'll need to click into Configure to complete the picker step.
+
+The integration auto-detects when you've finished picking and swaps in the new photo set; the previous picker session is cleaned up.
 
 ## Troubleshooting
 
