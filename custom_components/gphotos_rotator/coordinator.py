@@ -64,6 +64,7 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         self.current_bytes: bytes | None = None
         self.image_last_updated: datetime | None = None
         self.image_content_type: str = "image/jpeg"
+        self._session_dead: bool = False
 
         super().__init__(
             hass,
@@ -76,14 +77,21 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
     async def _async_update_data(self) -> None:
         if not self.media_items:
             raise UpdateFailed("No picked media items")
+        if self._session_dead:
+            return
         await self._rotate()
 
     async def async_rotate_now(self) -> None:
+        if self._session_dead:
+            return
         await self._rotate()
         self.async_update_listeners()
 
     async def _rotate(self) -> None:
         await self._ensure_fresh_base_urls()
+        if self._session_dead:
+            return
+
         index = self._pick_next_index()
         item = self.media_items[index]
         media_file = item.get("mediaFile", {})
@@ -97,8 +105,9 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             raise ConfigEntryAuthFailed(
                 "Google rejected the OAuth token"
             ) from err
-        except PickerApiError as err:
-            raise UpdateFailed(f"Image download failed: {err}") from err
+        except PickerApiError:
+            self._mark_session_dead()
+            return
 
         self.current_index = index
         self.current_item = item
@@ -123,16 +132,16 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             raise ConfigEntryAuthFailed(
                 "Google rejected the OAuth token"
             ) from err
-        except SessionExpiredError:
-            self._notify_session_expired()
-            raise UpdateFailed(
-                "Picker session expired; re-pick required"
+        except (SessionExpiredError, PickerApiError) as err:
+            _LOGGER.warning(
+                "Cannot refresh media list (%s); session likely expired", err
             )
-        except PickerApiError as err:
-            raise UpdateFailed(f"Failed to refresh media items: {err}") from err
+            self._mark_session_dead()
+            return
 
         if not items:
-            raise UpdateFailed("Refreshed media list is empty")
+            self._mark_session_dead()
+            return
 
         self.media_items = items
         self.items_fetched_at = dt_util.utcnow()
@@ -146,15 +155,22 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         }
         self.hass.config_entries.async_update_entry(self.entry, data=new_data)
 
-    def _notify_session_expired(self) -> None:
+    def _mark_session_dead(self) -> None:
+        if self._session_dead:
+            return
+        self._session_dead = True
+        _LOGGER.warning("Picker session is dead; rotation paused until re-pick")
         persistent_notification.async_create(
             self.hass,
             (
                 "Your Google Photos picker session has expired. "
-                "Press the **Re-pick photos** button on the integration to "
-                "select photos again."
+                "Go to **[Settings → Devices & services]"
+                "(/config/integrations/integration/" + DOMAIN + ")** "
+                f"and press **Configure** on **{self.entry.title}** to "
+                "select photos again.\n\n"
+                "Photo rotation is paused until you re-pick."
             ),
-            title="Google Photos Rotator",
+            title="Google Photos Rotator — Session expired",
             notification_id=f"{DOMAIN}_session_expired_{self.entry.entry_id}",
         )
 
