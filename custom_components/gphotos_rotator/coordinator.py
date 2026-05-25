@@ -128,11 +128,12 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             return
         try:
             items = await self.client.list_media_items(self.session_id)
-        except AuthError as err:
-            raise ConfigEntryAuthFailed(
-                "Google rejected the OAuth token"
-            ) from err
         except (SessionExpiredError, PickerApiError) as err:
+            # AuthError (401/403) is a subclass of PickerApiError and is
+            # caught here intentionally. The token was already validated in
+            # async_setup_entry; a 401 at this point means the *session* is
+            # dead (it was created with the old, now-revoked token), not
+            # that the current token is bad.
             _LOGGER.warning(
                 "Cannot refresh media list (%s); session likely expired", err
             )
