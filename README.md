@@ -84,22 +84,42 @@ The image automatically refreshes whenever the entity ticks.
 
 Open the integration's device page and use the **Rotation interval** number and **Order** select. Changes take effect on the next tick.
 
-### Face detection (optional)
+### Face detection (optional, separate service)
 
-The integration can detect faces in each rotated photo locally (no cloud calls) and expose the bounding boxes on a sensor for pan-and-zoom dashboard cards.
+Face detection runs in a small companion service container — **not** inside Home Assistant Core — so it works the same on HA OS, HA Container, HA Supervised, and HA Core, regardless of Python version or Alpine/Debian. The integration just calls its `/v1/detect` HTTP endpoint and exposes the results on the `sensor.<instance>_faces_count` entity (state = face count, `attributes.faces` = list of normalized 0–1 bboxes).
 
-**Enable**: Settings → Devices & services → Google Photos Rotator → **CONFIGURE** (the options dialog, not Reconfigure) → toggle **Enable face detection**.
+**Backend:** bundled **YuNet 2023mar** ONNX model (~230 KB) running on `onnxruntime` inside a Debian-based container. ~30–80 ms per photo on amd64, ~80–200 ms on Pi 4 / HA Yellow.
 
-- Backend: bundled **YuNet 2023mar** ONNX model (~230 KB) run via **onnxruntime** (no OpenCV dependency).
-- Cost when running: `onnxruntime` adds ~15 MB wheel / ~50 MB on disk / ~40–60 MB RAM. Detection itself takes ~30–150 ms per photo on a Pi 4 / HA Yellow / Pi 5.
-- The Python imports (`onnxruntime`, `numpy`, `PIL`) are **lazy** — disabled users pay zero RAM/CPU.
-- Letterboxes input to the model's fixed 640×640 size; bboxes are returned normalized 0–1 against the original image dimensions. Verified to match `cv2.FaceDetectorYN` reference output at IoU ≥ 0.80 across test images.
+**Why a separate service?** The naive approach — `pip install onnxruntime` inside HA Core — doesn't work on HA OS because the HA Core container is Alpine/musl, and `onnxruntime` ships no musllinux wheels. Older OpenCV-based approaches hit the same wall on Python 3.14. Running detection in its own container (Debian base, full wheel coverage) sidesteps the whole problem and keeps HA Core's footprint clean.
 
-> ⚠️ **Install-type compatibility (as of 2026-06):**
-> - **HA Container** (Debian base): `onnxruntime` is **not** auto-installed by the integration (no `requirements` entry, to keep the integration loadable everywhere). To enable face detection, install it once inside the HA Container yourself: `docker exec homeassistant pip install onnxruntime>=1.16.0`. Then enable the option.
-> - **HA OS / Supervised** (Alpine/musl + Python 3.14): no compatible `onnxruntime` wheel exists upstream and HA's own musllinux wheel infra hasn't published cp314 builds for any face detection lib yet. **Face detection cannot run in-process on this install type today.** Workarounds: use an external face detection service (CompreFace / DeepStack / Frigate) and consume its API via a separate HA integration, or switch to HA Container if you have flexibility.
->
-> The integration itself loads normally on all install types — only the face detection sensor will be `unavailable` when the runtime isn't installable.
+#### Install path 1 — HA add-on (HA OS / HA Supervised, 1-click)
+
+1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories** → add `https://github.com/moimart/gphotos-integration`.
+2. Install the **GPhotos Face Detector** add-on that appears in the new entry, then **Start** it.
+3. In the integration: **Configure** → toggle **Enable face detection**. The default service URL (`http://local_gphotos_face_detector:8127`) already points at the add-on.
+
+#### Install path 2 — Standalone container (HA Container, remote machine, anywhere)
+
+```bash
+docker run -d --restart unless-stopped \
+  -p 8127:8127 \
+  --name gphotos-face-detector \
+  ghcr.io/moimart/gphotos-face-detector:latest
+```
+
+Then in the integration's **Configure** dialog, set the URL to `http://<host>:8127`. If you expose the service over an untrusted network, set `GPHOTOS_DETECTOR_TOKEN=<random>` env var on the container and the matching Bearer token in the integration options.
+
+#### Verifying
+
+```bash
+curl http://<host>:8127/v1/health
+# {"status":"ok","model":"yunet-2023mar","version":"0.4.0"}
+
+curl -X POST --data-binary @photo.jpg http://<host>:8127/v1/detect | jq
+# {"faces":[{"x":0.21,"y":0.18,...}],"image_width":1920,...}
+```
+
+Service source and Dockerfile live in [`service/`](service/) in this repo; the HA add-on wrapper lives in [`addons/gphotos_face_detector/`](addons/gphotos_face_detector/). Resource footprint: ~250 MB image on disk, ~80–120 MB RAM idle, <0.5 % CPU at the default 60 s rotation cadence.
 
 **Sensor shape** (`sensor.<instance>_faces_count`):
 

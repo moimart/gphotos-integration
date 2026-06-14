@@ -36,12 +36,15 @@ DEFAULT_IMAGE_SIZE = "=w1920-h1080"
 SERVICE_NEXT = "next"
 SERVICE_REPICK = "repick"
 
-# Face detection
+# Face detection (HTTP service since v0.4.0)
 CONF_FACE_DETECTION = "face_detection"
 CONF_FACE_MIN_CONFIDENCE = "face_min_confidence"
-CONF_FACE_MAX_DIMENSION = "face_max_dimension"
+CONF_FACE_SERVICE_URL = "face_service_url"
+CONF_FACE_SERVICE_TOKEN = "face_service_token"
 DEFAULT_FACE_DETECTION = False
 DEFAULT_FACE_MIN_CONFIDENCE = 0.6
-DEFAULT_FACE_MAX_DIMENSION = 1280
-FACE_MODEL_FILENAME = "face_detection_yunet_2023mar.onnx"
+# Sensible default for HA OS / Supervised: the slug of the bundled
+# add-on resolves to this hostname on HA's internal Docker network.
+# Users running the service standalone elsewhere will need to override.
+DEFAULT_FACE_SERVICE_URL = "http://local_gphotos_face_detector:8127"
 FACE_CACHE_MAX = 200

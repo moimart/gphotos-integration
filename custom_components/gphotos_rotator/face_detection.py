@@ -1,37 +1,32 @@
-"""YuNet face detection via onnxruntime.
+"""HTTP client for the gphotos-face-detector service.
 
-Only imported when the user enables face detection in options, so
-`import onnxruntime` and `import PIL` happen lazily — disabled users
-pay zero RAM cost.
+In v0.4.0 the face detection runtime moved out of HA Core (where the
+onnxruntime / opencv wheels can't be installed on Alpine/musl + Python
+3.14) and into a separate container — either the HA add-on
+`gphotos_face_detector` or any other container running the same image.
+This module just talks to it over HTTP.
 
-We run the bundled YuNet 2023mar ONNX model directly via onnxruntime
-(no OpenCV dependency) so the integration works on Python 3.14 / HA
-2026.5+, where opencv-python-headless has no published wheel.
-
-Decoding follows OpenCV's reference `cv::FaceDetectorYN` implementation:
-- score per cell  = sqrt(cls * obj)   (cls/obj already in [0, 1])
-- bbox per cell   = (cx, cy) = (col + bbox[0], row + bbox[1]) * stride
-                    (w,  h)  = exp(bbox[2..3]) * stride
-                    (top-left form: x1 = cx - w/2, y1 = cy - h/2)
-- strides         = (8, 16, 32)  with a fixed 640×640 model input
-- NMS             = greedy IoU, threshold 0.3
+The module is still imported lazily by `coordinator._ensure_face_detector`,
+so users who don't enable face detection pay zero cost — same lazy-import
+contract as previous versions.
 """
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass
-from io import BytesIO
+from typing import Any
 
-import numpy as np
-import onnxruntime as ort
-from PIL import Image
+from aiohttp import ClientError, ClientSession, ClientTimeout
 
 _LOGGER = logging.getLogger(__name__)
 
-_INPUT_W = 640
-_INPUT_H = 640
-_STRIDES = (8, 16, 32)
+_HEALTH_TIMEOUT = ClientTimeout(total=5)
+_DETECT_TIMEOUT = ClientTimeout(total=15)
+
+
+class FaceServiceError(Exception):
+    """Raised on any HTTP/transport error talking to the detector service."""
 
 
 @dataclass(slots=True)
@@ -44,11 +39,11 @@ class FaceBox:
 
     def as_dict(self) -> dict[str, float]:
         return {
-            "x": round(self.x, 4),
-            "y": round(self.y, 4),
-            "w": round(self.w, 4),
-            "h": round(self.h, 4),
-            "confidence": round(self.confidence, 3),
+            "x": self.x,
+            "y": self.y,
+            "w": self.w,
+            "h": self.h,
+            "confidence": self.confidence,
         }
 
 
@@ -61,165 +56,84 @@ class DetectionResult:
 
 
 class FaceDetector:
-    """YuNet detector backed by onnxruntime."""
+    """HTTP client wrapping the detector service /v1/detect endpoint."""
 
     def __init__(
         self,
-        model_path: str,
+        session: ClientSession,
+        base_url: str,
         min_confidence: float = 0.6,
-        max_dimension: int = 1280,  # accepted for API compat; model is fixed 640
-        nms_threshold: float = 0.3,
+        auth_token: str | None = None,
     ) -> None:
-        del max_dimension  # silenced: model input is fixed at 640×640
+        self._session = session
+        self._base_url = base_url.rstrip("/")
         self._min_confidence = float(min_confidence)
-        self._nms_threshold = float(nms_threshold)
+        self._auth_token = auth_token or None
 
-        sess_opts = ort.SessionOptions()
-        sess_opts.graph_optimization_level = (
-            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        )
-        sess_opts.intra_op_num_threads = 1  # HA runs many things; be polite
-        self._session = ort.InferenceSession(
-            model_path,
-            sess_options=sess_opts,
-            providers=["CPUExecutionProvider"],
-        )
-        self._input_name = self._session.get_inputs()[0].name
-        self._output_names = [o.name for o in self._session.get_outputs()]
+    @property
+    def base_url(self) -> str:
+        return self._base_url
 
-    def detect(self, image_bytes: bytes) -> DetectionResult:
-        start = time.monotonic()
+    def _headers(self, content_type: str | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self._auth_token:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
 
+    async def health(self) -> dict[str, Any]:
+        url = f"{self._base_url}/v1/health"
         try:
-            img = Image.open(BytesIO(image_bytes)).convert("RGB")
-        except Exception as err:  # noqa: BLE001 — Pillow error variants
-            _LOGGER.warning("Failed to decode image for face detection: %s", err)
-            return DetectionResult([], 0, 0, 0)
+            async with self._session.get(
+                url, headers=self._headers(), timeout=_HEALTH_TIMEOUT
+            ) as resp:
+                if resp.status != 200:
+                    raise FaceServiceError(
+                        f"GET {url} -> HTTP {resp.status}"
+                    )
+                return await resp.json()
+        except ClientError as err:
+            raise FaceServiceError(f"GET {url} failed: {err}") from err
 
-        orig_w, orig_h = img.size
+    async def detect(self, image_bytes: bytes) -> DetectionResult:
+        url = f"{self._base_url}/v1/detect"
+        params = {"min_confidence": str(self._min_confidence)}
+        start = time.monotonic()
+        try:
+            async with self._session.post(
+                url,
+                params=params,
+                data=image_bytes,
+                headers=self._headers("application/octet-stream"),
+                timeout=_DETECT_TIMEOUT,
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    raise FaceServiceError(
+                        f"POST {url} -> HTTP {resp.status}: {body[:200]}"
+                    )
+                data = await resp.json()
+        except ClientError as err:
+            raise FaceServiceError(f"POST {url} failed: {err}") from err
 
-        # Letterbox to 640×640: scale to fit, pad with neutral gray.
-        scale = min(_INPUT_W / orig_w, _INPUT_H / orig_h)
-        new_w = max(1, int(orig_w * scale))
-        new_h = max(1, int(orig_h * scale))
-        resized = img.resize((new_w, new_h), Image.BILINEAR)
-        canvas = Image.new("RGB", (_INPUT_W, _INPUT_H), (114, 114, 114))
-        canvas.paste(resized, (0, 0))
-
-        # HWC RGB uint8 -> HWC BGR float32 -> CHW -> BCHW. YuNet was trained
-        # on OpenCV-style BGR with no normalization.
-        rgb = np.asarray(canvas, dtype=np.float32)
-        bgr = rgb[:, :, ::-1]
-        chw = np.ascontiguousarray(bgr.transpose(2, 0, 1)[np.newaxis])
-
-        outputs = self._session.run(self._output_names, {self._input_name: chw})
-        # outputs come back in declaration order:
-        # cls_8, cls_16, cls_32, obj_8, obj_16, obj_32,
-        # bbox_8, bbox_16, bbox_32, kps_8, kps_16, kps_32
-        cls_outs = outputs[0:3]
-        obj_outs = outputs[3:6]
-        bbox_outs = outputs[6:9]
-
-        all_boxes: list[np.ndarray] = []
-        all_scores: list[np.ndarray] = []
-
-        for stride_idx, stride in enumerate(_STRIDES):
-            cls = cls_outs[stride_idx].reshape(-1)
-            obj = obj_outs[stride_idx].reshape(-1)
-            bbox = bbox_outs[stride_idx].reshape(-1, 4)
-
-            score = np.sqrt(np.clip(cls, 0.0, 1.0) * np.clip(obj, 0.0, 1.0))
-            mask = score >= self._min_confidence
-            if not mask.any():
-                continue
-
-            cols = _INPUT_W // stride
-            rows = _INPUT_H // stride
-            r_grid, c_grid = np.meshgrid(
-                np.arange(rows, dtype=np.float32),
-                np.arange(cols, dtype=np.float32),
-                indexing="ij",
+        faces = [
+            FaceBox(
+                x=float(f["x"]),
+                y=float(f["y"]),
+                w=float(f["w"]),
+                h=float(f["h"]),
+                confidence=float(f["confidence"]),
             )
-            r_flat = r_grid.reshape(-1)[mask]
-            c_flat = c_grid.reshape(-1)[mask]
-            bbox_m = bbox[mask]
-            score_m = score[mask]
+            for f in data.get("faces", [])
+        ]
 
-            cx = (c_flat + bbox_m[:, 0]) * stride
-            cy = (r_flat + bbox_m[:, 1]) * stride
-            w = np.exp(bbox_m[:, 2]) * stride
-            h = np.exp(bbox_m[:, 3]) * stride
-            x1 = cx - w / 2.0
-            y1 = cy - h / 2.0
-
-            all_boxes.append(np.stack([x1, y1, w, h], axis=1))
-            all_scores.append(score_m)
-
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-
-        if not all_boxes:
-            return DetectionResult([], orig_w, orig_h, elapsed_ms)
-
-        boxes = np.concatenate(all_boxes, axis=0)
-        scores = np.concatenate(all_scores, axis=0)
-
-        keep = _nms(boxes, scores, self._nms_threshold)
-        if not keep:
-            return DetectionResult([], orig_w, orig_h, elapsed_ms)
-
-        boxes = boxes[keep]
-        scores = scores[keep]
-
-        # Boxes are in the 640×640 letterbox space — divide by the scale used
-        # for letterboxing to map back to original-pixel coords. Padding was
-        # at bottom/right only (paste at (0, 0)) so no offset to subtract.
-        boxes_orig = boxes / scale
-
-        faces: list[FaceBox] = []
-        for (x, y, bw, bh), s in zip(boxes_orig, scores, strict=False):
-            x_n = max(0.0, float(x) / orig_w)
-            y_n = max(0.0, float(y) / orig_h)
-            w_n = max(0.0, min(1.0 - x_n, float(bw) / orig_w))
-            h_n = max(0.0, min(1.0 - y_n, float(bh) / orig_h))
-            if w_n <= 0.0 or h_n <= 0.0:
-                continue
-            faces.append(
-                FaceBox(x=x_n, y=y_n, w=w_n, h=h_n, confidence=float(s))
-            )
-
+        # Trust the server's detection_ms (CPU-time) over our wall-clock —
+        # ours would include the HTTP round-trip.
+        elapsed_ms = int(data.get("detection_ms") or (time.monotonic() - start) * 1000)
         return DetectionResult(
             faces=faces,
-            image_width=orig_w,
-            image_height=orig_h,
+            image_width=int(data.get("image_width", 0)),
+            image_height=int(data.get("image_height", 0)),
             detection_ms=elapsed_ms,
         )
-
-
-def _nms(
-    boxes: np.ndarray, scores: np.ndarray, iou_threshold: float
-) -> list[int]:
-    """Greedy IoU NMS. boxes are [x, y, w, h] in pixel coords."""
-    if boxes.size == 0:
-        return []
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = x1 + boxes[:, 2]
-    y2 = y1 + boxes[:, 3]
-    areas = boxes[:, 2] * boxes[:, 3]
-    order = scores.argsort()[::-1]
-    keep: list[int] = []
-    while order.size > 0:
-        i = int(order[0])
-        keep.append(i)
-        if order.size == 1:
-            break
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1)
-        h = np.maximum(0.0, yy2 - yy1)
-        inter = w * h
-        iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-9)
-        order = order[1:][iou < iou_threshold]
-    return keep

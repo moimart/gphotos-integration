@@ -27,12 +27,13 @@ from homeassistant.util import dt as dt_util
 from .api import PickerApiError, PickerClient
 from .const import (
     CONF_FACE_DETECTION,
-    CONF_FACE_MAX_DIMENSION,
     CONF_FACE_MIN_CONFIDENCE,
+    CONF_FACE_SERVICE_TOKEN,
+    CONF_FACE_SERVICE_URL,
     CONF_MEDIA_ITEMS,
     DEFAULT_FACE_DETECTION,
-    DEFAULT_FACE_MAX_DIMENSION,
     DEFAULT_FACE_MIN_CONFIDENCE,
+    DEFAULT_FACE_SERVICE_URL,
     DEFAULT_INTERVAL,
     DEFAULT_ORDER,
     DOMAIN,
@@ -256,7 +257,7 @@ class _FlowOAuthSession:
 
 
 class GPhotosOptionsFlowHandler(OptionsFlow):
-    """Options flow: face detection toggle + thresholds."""
+    """Options flow: face detection toggle, service URL, thresholds."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -276,6 +277,16 @@ class GPhotosOptionsFlowHandler(OptionsFlow):
                         ),
                     ): BooleanSelector(),
                     vol.Required(
+                        CONF_FACE_SERVICE_URL,
+                        default=current.get(
+                            CONF_FACE_SERVICE_URL, DEFAULT_FACE_SERVICE_URL
+                        ),
+                    ): str,
+                    vol.Optional(
+                        CONF_FACE_SERVICE_TOKEN,
+                        default=current.get(CONF_FACE_SERVICE_TOKEN, ""),
+                    ): str,
+                    vol.Required(
                         CONF_FACE_MIN_CONFIDENCE,
                         default=current.get(
                             CONF_FACE_MIN_CONFIDENCE, DEFAULT_FACE_MIN_CONFIDENCE
@@ -283,17 +294,6 @@ class GPhotosOptionsFlowHandler(OptionsFlow):
                     ): NumberSelector(
                         NumberSelectorConfig(
                             min=0.1, max=1.0, step=0.05, mode=NumberSelectorMode.SLIDER
-                        )
-                    ),
-                    vol.Required(
-                        CONF_FACE_MAX_DIMENSION,
-                        default=current.get(
-                            CONF_FACE_MAX_DIMENSION, DEFAULT_FACE_MAX_DIMENSION
-                        ),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=320, max=4096, step=160, mode=NumberSelectorMode.BOX,
-                            unit_of_measurement="px",
                         )
                     ),
                 }

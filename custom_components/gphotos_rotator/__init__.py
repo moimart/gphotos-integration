@@ -15,11 +15,12 @@ import voluptuous as vol
 from .api import AuthError, PickerClient
 from .const import (
     CONF_FACE_DETECTION,
-    CONF_FACE_MAX_DIMENSION,
     CONF_FACE_MIN_CONFIDENCE,
+    CONF_FACE_SERVICE_TOKEN,
+    CONF_FACE_SERVICE_URL,
     DEFAULT_FACE_DETECTION,
-    DEFAULT_FACE_MAX_DIMENSION,
     DEFAULT_FACE_MIN_CONFIDENCE,
+    DEFAULT_FACE_SERVICE_URL,
     DOMAIN,
     SERVICE_NEXT,
     SERVICE_REPICK,
@@ -86,9 +87,10 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
         min_confidence=entry.options.get(
             CONF_FACE_MIN_CONFIDENCE, DEFAULT_FACE_MIN_CONFIDENCE
         ),
-        max_dimension=entry.options.get(
-            CONF_FACE_MAX_DIMENSION, DEFAULT_FACE_MAX_DIMENSION
+        service_url=entry.options.get(
+            CONF_FACE_SERVICE_URL, DEFAULT_FACE_SERVICE_URL
         ),
+        service_token=entry.options.get(CONF_FACE_SERVICE_TOKEN, ""),
     )
 
 

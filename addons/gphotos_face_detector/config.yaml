@@ -1,0 +1,23 @@
+name: GPhotos Face Detector
+slug: gphotos_face_detector
+version: "0.4.0"
+description: >-
+  Local face detection HTTP service (YuNet) for the Google Photos Rotator
+  integration. Bypasses the Alpine/musl wheel gap that prevents
+  onnxruntime from installing inside HA Core on HA OS.
+url: https://github.com/moimart/gphotos-integration
+arch:
+  - amd64
+  - aarch64
+init: false
+boot: auto
+startup: services
+hassio_api: false
+host_network: false
+ports:
+  8127/tcp: 8127
+ports_description:
+  8127/tcp: HTTP API (POST /v1/detect, GET /v1/health)
+image: ghcr.io/moimart/gphotos-face-detector
+options: {}
+schema: {}

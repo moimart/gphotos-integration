@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import random
 from collections import OrderedDict
 from datetime import datetime, timedelta
@@ -12,6 +11,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -22,20 +22,20 @@ from .api import AuthError, PickerApiError, PickerClient, SessionExpiredError
 from .const import (
     BASE_URL_TTL_SECONDS,
     CONF_FACE_DETECTION,
-    CONF_FACE_MAX_DIMENSION,
     CONF_FACE_MIN_CONFIDENCE,
+    CONF_FACE_SERVICE_TOKEN,
+    CONF_FACE_SERVICE_URL,
     CONF_INTERVAL,
     CONF_MEDIA_ITEMS,
     CONF_ORDER,
     DEFAULT_FACE_DETECTION,
-    DEFAULT_FACE_MAX_DIMENSION,
     DEFAULT_FACE_MIN_CONFIDENCE,
+    DEFAULT_FACE_SERVICE_URL,
     DEFAULT_IMAGE_SIZE,
     DEFAULT_INTERVAL,
     DEFAULT_ORDER,
     DOMAIN,
     FACE_CACHE_MAX,
-    FACE_MODEL_FILENAME,
     ORDER_RANDOM,
 )
 
@@ -87,8 +87,11 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         self.face_min_confidence: float = entry.options.get(
             CONF_FACE_MIN_CONFIDENCE, DEFAULT_FACE_MIN_CONFIDENCE
         )
-        self.face_max_dimension: int = entry.options.get(
-            CONF_FACE_MAX_DIMENSION, DEFAULT_FACE_MAX_DIMENSION
+        self.face_service_url: str = entry.options.get(
+            CONF_FACE_SERVICE_URL, DEFAULT_FACE_SERVICE_URL
+        )
+        self.face_service_token: str = entry.options.get(
+            CONF_FACE_SERVICE_TOKEN, ""
         )
         self.current_faces: list[dict[str, float]] = []
         self.faces_detection_pending: bool = False
@@ -256,17 +259,15 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             self.face_detection_enabled = False
             self.faces_detection_pending = False
             return
-        except Exception as err:  # noqa: BLE001 — model load errors vary
-            _LOGGER.warning("Face detector init failed: %s", err)
-            self.face_detection_enabled = False
-            self.faces_detection_pending = False
-            return
 
         try:
-            result = await self.hass.async_add_executor_job(detector.detect, data)
-        except Exception:  # noqa: BLE001 — defensive: any cv2 error
-            _LOGGER.exception("Face detection raised")
+            result = await detector.detect(data)
+        except Exception:  # noqa: BLE001 — defensive: any HTTP/transport error
+            _LOGGER.exception("Face detection request failed")
             self.faces_detection_pending = False
+            # Force a fresh health check on the next tick — service may be
+            # restarting.
+            self._face_detector = None
             return
 
         faces = [f.as_dict() for f in result.faces]
@@ -290,49 +291,54 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         if self._face_detector is not None:
             return self._face_detector
 
-        def _build() -> Any:
-            try:
-                from .face_detection import FaceDetector
-            except ImportError as err:
-                # Most likely cv2 not installed — Python 3.14 has no opencv
-                # wheel yet (HA 2026.5+). Tell the user via notification and
-                # disable the feature.
-                raise _FaceDetectorUnavailable(str(err)) from err
-
-            model_path = os.path.join(
-                os.path.dirname(__file__), "models", FACE_MODEL_FILENAME
-            )
-            return FaceDetector(
-                model_path=model_path,
-                min_confidence=self.face_min_confidence,
-                max_dimension=self.face_max_dimension,
-            )
-
         try:
-            self._face_detector = await self.hass.async_add_executor_job(_build)
-        except _FaceDetectorUnavailable as err:
+            from .face_detection import FaceDetector, FaceServiceError
+        except ImportError as err:
+            raise _FaceDetectorUnavailable(str(err)) from err
+
+        session = aiohttp_client.async_get_clientsession(self.hass)
+        client = FaceDetector(
+            session=session,
+            base_url=self.face_service_url,
+            min_confidence=self.face_min_confidence,
+            auth_token=self.face_service_token or None,
+        )
+
+        # Verify the service is reachable before declaring it our detector.
+        try:
+            health = await client.health()
+        except FaceServiceError as err:
             self._notify_face_detector_missing(str(err))
-            raise
+            raise _FaceDetectorUnavailable(str(err)) from err
+
+        _LOGGER.info(
+            "Face detector service ready at %s (%s)",
+            self.face_service_url,
+            health.get("model", "unknown"),
+        )
+        self._face_detector = client
         return self._face_detector
 
     def _notify_face_detector_missing(self, detail: str) -> None:
         persistent_notification.async_create(
             self.hass,
             (
-                "Face detection needs the `onnxruntime` Python package, but "
-                "it isn't installed in this Home Assistant environment.\n\n"
-                "**Status on common install types (as of 2026-06):**\n"
-                "- **Home Assistant Container** (Debian-based image): "
-                "`onnxruntime` installs via pip — face detection works.\n"
-                "- **Home Assistant OS / Supervised** (Alpine/musl + Python "
-                "3.14): no compatible `onnxruntime` wheel exists yet. Face "
-                "detection cannot run in-process here. Use an external face "
-                "detection service (CompreFace, DeepStack, Frigate) instead, "
-                "or wait for upstream musllinux/cp314 wheels.\n\n"
-                "Face detection has been disabled for this session — the "
-                "rest of the integration (rotation, image entity, etc.) "
-                "continues to work normally.\n\n"
-                f"Details: `{detail}`"
+                "Could not reach the face detection service at "
+                f"`{self.face_service_url}`.\n\n"
+                "Face detection has been disabled for this session. The rest "
+                "of the integration (rotation, image entity, etc.) keeps "
+                "working normally.\n\n"
+                "**Fix:**\n"
+                "1. **HA OS / Supervised**: install the *GPhotos Face "
+                "Detector* add-on from this integration's repository "
+                "(Settings → Add-ons → Add-on Store → ⋮ → Repositories → "
+                "`https://github.com/moimart/gphotos-integration` → install "
+                "and start the add-on).\n"
+                "2. **Standalone**: run "
+                "`docker run -d -p 8127:8127 ghcr.io/moimart/gphotos-face-detector` "
+                "on a machine reachable from this HA, and set the URL in the "
+                "integration's options.\n\n"
+                f"Error: `{detail}`"
             ),
             title="Google Photos Rotator — face detection unavailable",
             notification_id=(
@@ -344,16 +350,25 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         self,
         enabled: bool,
         min_confidence: float,
-        max_dimension: int,
+        service_url: str,
+        service_token: str,
     ) -> None:
         prev_enabled = self.face_detection_enabled
+        prev_url = self.face_service_url
+        prev_token = self.face_service_token
         self.face_detection_enabled = enabled
         self.face_min_confidence = min_confidence
-        self.face_max_dimension = max_dimension
+        self.face_service_url = service_url
+        self.face_service_token = service_token
 
-        # Invalidate detector if thresholds or dimension changed; cache too.
-        self._face_detector = None
-        self._face_cache.clear()
+        # Invalidate detector if any setting changed; cache too.
+        if (
+            prev_url != service_url
+            or prev_token != service_token
+            or prev_enabled != enabled
+        ):
+            self._face_detector = None
+            self._face_cache.clear()
 
         if not enabled:
             self.current_faces = []
