@@ -55,13 +55,19 @@ class NextPhotoImage(CoordinatorEntity[GPhotosCoordinator], ImageEntity):
     def extra_state_attributes(self) -> dict[str, object]:
         item = self.coordinator.current_item or {}
         media_file = item.get("mediaFile", {})
-        return {
+        attrs: dict[str, object] = {
             "filename": media_file.get("filename"),
             "media_item_id": item.get("id"),
             "media_count": len(self.coordinator.media_items),
             "order": self.coordinator.order,
             "interval_seconds": self.coordinator.interval,
         }
+        if self.coordinator.face_detection_enabled:
+            attrs["face_count"] = len(self.coordinator.current_faces)
+            attrs["faces_detection_pending"] = (
+                self.coordinator.faces_detection_pending
+            )
+        return attrs
 
     @callback
     def _handle_coordinator_update(self) -> None:

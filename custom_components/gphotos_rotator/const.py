@@ -35,3 +35,13 @@ DEFAULT_IMAGE_SIZE = "=w1920-h1080"
 
 SERVICE_NEXT = "next"
 SERVICE_REPICK = "repick"
+
+# Face detection
+CONF_FACE_DETECTION = "face_detection"
+CONF_FACE_MIN_CONFIDENCE = "face_min_confidence"
+CONF_FACE_MAX_DIMENSION = "face_max_dimension"
+DEFAULT_FACE_DETECTION = False
+DEFAULT_FACE_MIN_CONFIDENCE = 0.6
+DEFAULT_FACE_MAX_DIMENSION = 1280
+FACE_MODEL_FILENAME = "face_detection_yunet_2023mar.onnx"
+FACE_CACHE_MAX = 200

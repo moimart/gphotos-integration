@@ -45,6 +45,19 @@
       "default": "Successfully authenticated with Google Photos."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Google Photos Rotator options",
+        "description": "Optional on-device face detection. Coordinates are exposed via the **Faces count** sensor's `faces` attribute (normalized 0–1) for use by pan-and-zoom dashboard cards.",
+        "data": {
+          "face_detection": "Enable face detection",
+          "face_min_confidence": "Minimum detection confidence (0–1)",
+          "face_max_dimension": "Max image dimension for detection (long edge, in pixels)"
+        }
+      }
+    }
+  },
   "selector": {
     "order": {
       "options": {
@@ -84,6 +97,9 @@
     "sensor": {
       "media_count": {
         "name": "Media count"
+      },
+      "faces_count": {
+        "name": "Faces count"
       }
     }
   },

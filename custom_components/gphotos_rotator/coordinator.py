@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -19,13 +21,21 @@ from homeassistant.util import dt as dt_util
 from .api import AuthError, PickerApiError, PickerClient, SessionExpiredError
 from .const import (
     BASE_URL_TTL_SECONDS,
+    CONF_FACE_DETECTION,
+    CONF_FACE_MAX_DIMENSION,
+    CONF_FACE_MIN_CONFIDENCE,
     CONF_INTERVAL,
     CONF_MEDIA_ITEMS,
     CONF_ORDER,
+    DEFAULT_FACE_DETECTION,
+    DEFAULT_FACE_MAX_DIMENSION,
+    DEFAULT_FACE_MIN_CONFIDENCE,
     DEFAULT_IMAGE_SIZE,
     DEFAULT_INTERVAL,
     DEFAULT_ORDER,
     DOMAIN,
+    FACE_CACHE_MAX,
+    FACE_MODEL_FILENAME,
     ORDER_RANDOM,
 )
 
@@ -65,6 +75,24 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         self.image_last_updated: datetime | None = None
         self.image_content_type: str = "image/jpeg"
         self._session_dead: bool = False
+
+        # Face detection state. detector is lazy-built on first enabled use.
+        self.face_detection_enabled: bool = entry.options.get(
+            CONF_FACE_DETECTION, DEFAULT_FACE_DETECTION
+        )
+        self.face_min_confidence: float = entry.options.get(
+            CONF_FACE_MIN_CONFIDENCE, DEFAULT_FACE_MIN_CONFIDENCE
+        )
+        self.face_max_dimension: int = entry.options.get(
+            CONF_FACE_MAX_DIMENSION, DEFAULT_FACE_MAX_DIMENSION
+        )
+        self.current_faces: list[dict[str, float]] = []
+        self.faces_detection_pending: bool = False
+        self.faces_detection_ms: int = 0
+        self.faces_image_width: int = 0
+        self.faces_image_height: int = 0
+        self._face_detector: Any | None = None
+        self._face_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
         super().__init__(
             hass,
@@ -109,11 +137,26 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             self._mark_session_dead()
             return
 
+        # Atomic swap: new image + cleared faces in a single update so any
+        # consumer reading the faces sensor never sees coordinates from the
+        # previous photo paired with the new image.
         self.current_index = index
         self.current_item = item
         self.current_bytes = data
+        self.current_faces = []
+        self.faces_detection_pending = self.face_detection_enabled
+        self.faces_detection_ms = 0
+        self.faces_image_width = 0
+        self.faces_image_height = 0
         self.image_content_type = media_file.get("mimeType") or "image/jpeg"
         self.image_last_updated = dt_util.utcnow()
+        self.async_update_listeners()
+
+        # Detection runs after the image is published so the slow path
+        # never blocks the rotation.
+        if self.face_detection_enabled:
+            await self._run_face_detection(item.get("id") or "", data)
+            self.async_update_listeners()
 
     def _pick_next_index(self) -> int:
         count = len(self.media_items)
@@ -186,6 +229,100 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         )
         # Reschedule the timer with the new interval.
         self._schedule_refresh()
+
+    # ----- face detection -----
+
+    async def _run_face_detection(self, media_id: str, data: bytes) -> None:
+        cached = self._face_cache.get(media_id)
+        if cached is not None:
+            self._face_cache.move_to_end(media_id)
+            self.current_faces = cached["faces"]
+            self.faces_detection_ms = cached["detection_ms"]
+            self.faces_image_width = cached["image_width"]
+            self.faces_image_height = cached["image_height"]
+            self.faces_detection_pending = False
+            return
+
+        try:
+            detector = await self._ensure_face_detector()
+        except Exception as err:  # noqa: BLE001 — import/model errors vary
+            _LOGGER.warning("Face detector unavailable: %s", err)
+            self.face_detection_enabled = False
+            self.faces_detection_pending = False
+            return
+
+        try:
+            result = await self.hass.async_add_executor_job(detector.detect, data)
+        except Exception:  # noqa: BLE001 — defensive: any cv2 error
+            _LOGGER.exception("Face detection raised")
+            self.faces_detection_pending = False
+            return
+
+        faces = [f.as_dict() for f in result.faces]
+        self.current_faces = faces
+        self.faces_detection_ms = result.detection_ms
+        self.faces_image_width = result.image_width
+        self.faces_image_height = result.image_height
+        self.faces_detection_pending = False
+
+        if media_id:
+            self._face_cache[media_id] = {
+                "faces": faces,
+                "detection_ms": result.detection_ms,
+                "image_width": result.image_width,
+                "image_height": result.image_height,
+            }
+            while len(self._face_cache) > FACE_CACHE_MAX:
+                self._face_cache.popitem(last=False)
+
+    async def _ensure_face_detector(self) -> Any:
+        if self._face_detector is not None:
+            return self._face_detector
+
+        def _build() -> Any:
+            from .face_detection import FaceDetector
+
+            model_path = os.path.join(
+                os.path.dirname(__file__), "models", FACE_MODEL_FILENAME
+            )
+            return FaceDetector(
+                model_path=model_path,
+                min_confidence=self.face_min_confidence,
+                max_dimension=self.face_max_dimension,
+            )
+
+        self._face_detector = await self.hass.async_add_executor_job(_build)
+        return self._face_detector
+
+    async def async_apply_face_options(
+        self,
+        enabled: bool,
+        min_confidence: float,
+        max_dimension: int,
+    ) -> None:
+        prev_enabled = self.face_detection_enabled
+        self.face_detection_enabled = enabled
+        self.face_min_confidence = min_confidence
+        self.face_max_dimension = max_dimension
+
+        # Invalidate detector if thresholds or dimension changed; cache too.
+        self._face_detector = None
+        self._face_cache.clear()
+
+        if not enabled:
+            self.current_faces = []
+            self.faces_detection_pending = False
+            self.faces_detection_ms = 0
+            self.faces_image_width = 0
+            self.faces_image_height = 0
+        elif prev_enabled != enabled and self.current_bytes and self.current_item:
+            # Detection just turned on — analyze the current image now.
+            self.faces_detection_pending = True
+            self.async_update_listeners()
+            await self._run_face_detection(
+                self.current_item.get("id") or "", self.current_bytes
+            )
+        self.async_update_listeners()
 
     async def async_set_order(self, order: str) -> None:
         self.order = order

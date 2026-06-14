@@ -14,6 +14,7 @@ Uses the new **Google Photos Picker API** with OAuth2 via `my.home-assistant.io`
 | `button.<instance>_next_photo_now` | Immediately rotate. |
 | `button.<instance>_re_pick_photos` | Start a new picker session to select a fresh photo set. |
 | `sensor.<instance>_media_count` | Diagnostic count of items in the rotation set. |
+| `sensor.<instance>_faces_count` | (Optional) Number of faces detected in the current photo; `faces` attribute holds normalized bbox list. `unavailable` unless face detection is enabled in options. |
 
 Services: `gphotos_rotator.next` and `gphotos_rotator.repick`.
 
@@ -82,6 +83,39 @@ The image automatically refreshes whenever the entity ticks.
 ### Adjusting interval / order
 
 Open the integration's device page and use the **Rotation interval** number and **Order** select. Changes take effect on the next tick.
+
+### Face detection (optional)
+
+The integration can detect faces in each rotated photo locally (no cloud calls) and expose the bounding boxes on a sensor for pan-and-zoom dashboard cards.
+
+**Enable**: Settings → Devices & services → Google Photos Rotator → **CONFIGURE** (the options dialog, not Reconfigure) → toggle **Enable face detection**.
+
+- Backend: OpenCV YuNet ONNX (bundled, ~230 KB). CPU-only, no GPU required.
+- Cost: ~50–70 MB RAM when enabled, 0 when disabled. ~30–150 ms per photo on a Pi 4 / HA Yellow / Pi 5.
+- The `opencv-python-headless` wheel (~120 MB on disk) is installed regardless, but `cv2` is **lazily imported** — disabled users pay zero RAM/CPU cost.
+
+**Sensor shape** (`sensor.<instance>_faces_count`):
+
+```yaml
+state: 3
+attributes:
+  faces:
+    - {x: 0.21, y: 0.18, w: 0.12, h: 0.18, confidence: 0.93}
+    - {x: 0.52, y: 0.22, w: 0.11, h: 0.17, confidence: 0.88}
+    - {x: 0.74, y: 0.20, w: 0.10, h: 0.16, confidence: 0.81}
+  image_width: 4032
+  image_height: 3024
+  detection_pending: false
+  detection_ms: 78
+  detector: yunet
+  media_item_id: AABx...
+```
+
+Coordinates are **normalized 0–1** (multiply by your display width/height). `detection_pending: true` means the photo just rotated and detection is still running — the `faces` list is empty during this brief window. Wait for `detection_pending: false` before reading `faces` to drive an animation.
+
+**Tuning** (same options dialog):
+- *Minimum detection confidence* (default 0.6): filter out weak detections.
+- *Max image dimension* (default 1280 px on the long edge): the integration downscales before detection for speed; coordinates stay normalized so this only affects latency and detection of very small faces.
 
 ### Re-picking photos
 

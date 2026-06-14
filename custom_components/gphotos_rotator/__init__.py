@@ -13,7 +13,17 @@ from homeassistant.helpers import config_entry_oauth2_flow, entity_registry as e
 import voluptuous as vol
 
 from .api import AuthError, PickerClient
-from .const import DOMAIN, SERVICE_NEXT, SERVICE_REPICK
+from .const import (
+    CONF_FACE_DETECTION,
+    CONF_FACE_MAX_DIMENSION,
+    CONF_FACE_MIN_CONFIDENCE,
+    DEFAULT_FACE_DETECTION,
+    DEFAULT_FACE_MAX_DIMENSION,
+    DEFAULT_FACE_MIN_CONFIDENCE,
+    DOMAIN,
+    SERVICE_NEXT,
+    SERVICE_REPICK,
+)
 from .coordinator import GPhotosCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -62,8 +72,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.runtime_data = GPhotosData(coordinator=coordinator, client=client)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     _async_register_services(hass)
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    if not hasattr(entry, "runtime_data"):
+        return
+    coord = entry.runtime_data.coordinator
+    await coord.async_apply_face_options(
+        enabled=entry.options.get(CONF_FACE_DETECTION, DEFAULT_FACE_DETECTION),
+        min_confidence=entry.options.get(
+            CONF_FACE_MIN_CONFIDENCE, DEFAULT_FACE_MIN_CONFIDENCE
+        ),
+        max_dimension=entry.options.get(
+            CONF_FACE_MAX_DIMENSION, DEFAULT_FACE_MAX_DIMENSION
+        ),
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -10,14 +10,29 @@ import voluptuous as vol
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     SOURCE_RECONFIGURE,
+    ConfigEntry,
     ConfigFlowResult,
+    OptionsFlow,
 )
+from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 from homeassistant.util import dt as dt_util
 
 from .api import PickerApiError, PickerClient
 from .const import (
+    CONF_FACE_DETECTION,
+    CONF_FACE_MAX_DIMENSION,
+    CONF_FACE_MIN_CONFIDENCE,
     CONF_MEDIA_ITEMS,
+    DEFAULT_FACE_DETECTION,
+    DEFAULT_FACE_MAX_DIMENSION,
+    DEFAULT_FACE_MIN_CONFIDENCE,
     DEFAULT_INTERVAL,
     DEFAULT_ORDER,
     DOMAIN,
@@ -34,6 +49,11 @@ class GPhotosOAuth2FlowHandler(
 
     DOMAIN = DOMAIN
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return GPhotosOptionsFlowHandler()
 
     def __init__(self) -> None:
         super().__init__()
@@ -233,3 +253,49 @@ class _FlowOAuthSession:
         headers = {**headers, "Authorization": f"Bearer {self._token['access_token']}"}
         session = aiohttp_client.async_get_clientsession(self.hass)
         return await session.request(method, url, headers=headers, **kwargs)
+
+
+class GPhotosOptionsFlowHandler(OptionsFlow):
+    """Options flow: face detection toggle + thresholds."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current = self.config_entry.options
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_FACE_DETECTION,
+                        default=current.get(
+                            CONF_FACE_DETECTION, DEFAULT_FACE_DETECTION
+                        ),
+                    ): BooleanSelector(),
+                    vol.Required(
+                        CONF_FACE_MIN_CONFIDENCE,
+                        default=current.get(
+                            CONF_FACE_MIN_CONFIDENCE, DEFAULT_FACE_MIN_CONFIDENCE
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1, max=1.0, step=0.05, mode=NumberSelectorMode.SLIDER
+                        )
+                    ),
+                    vol.Required(
+                        CONF_FACE_MAX_DIMENSION,
+                        default=current.get(
+                            CONF_FACE_MAX_DIMENSION, DEFAULT_FACE_MAX_DIMENSION
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=320, max=4096, step=160, mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="px",
+                        )
+                    ),
+                }
+            ),
+        )
