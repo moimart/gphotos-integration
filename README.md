@@ -90,12 +90,10 @@ The integration can detect faces in each rotated photo locally (no cloud calls) 
 
 **Enable**: Settings → Devices & services → Google Photos Rotator → **CONFIGURE** (the options dialog, not Reconfigure) → toggle **Enable face detection**.
 
-- Backend: OpenCV YuNet ONNX (bundled, ~230 KB). CPU-only, no GPU required.
-- Cost: ~50–70 MB RAM when enabled, 0 when disabled. ~30–150 ms per photo on a Pi 4 / HA Yellow / Pi 5.
-
-> ⚠️ **Python 3.14 / HA 2026.5+ caveat (v0.2.x)**: OpenCV does not yet ship a Python 3.14 wheel (latest 4.13.0.92 stops at cp313). On HA versions running Python 3.14, the `opencv-python-headless` dependency cannot be auto-installed, so enabling face detection will surface a notification and the feature stays disabled. The integration itself loads normally; only the face detection sensor goes unavailable.
->
-> A v0.3.x release will switch the backend from `cv2.FaceDetectorYN` to `onnxruntime` (which does have Python 3.14 wheels) running the same bundled YuNet ONNX model — same accuracy, same speed, no OpenCV dependency.
+- Backend: bundled **YuNet 2023mar** ONNX model (~230 KB) run via **onnxruntime** (no OpenCV dependency — works on Python 3.14 / HA 2026.5+).
+- Cost: `onnxruntime` is ~15 MB wheel, ~50 MB on disk; ~40–60 MB RAM at runtime. Detection itself takes ~30–150 ms per photo on a Pi 4 / HA Yellow / Pi 5.
+- The Python imports (`onnxruntime`, `numpy`, `PIL`) are **lazy** — disabled users pay zero RAM/CPU.
+- Letterboxes input to the model's fixed 640×640 size; bboxes are returned normalized 0–1 against the original image dimensions. Verified to match `cv2.FaceDetectorYN` reference output at IoU ≥ 0.80 across test images.
 
 **Sensor shape** (`sensor.<instance>_faces_count`):
 

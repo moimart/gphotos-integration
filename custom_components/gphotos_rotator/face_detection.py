@@ -1,21 +1,37 @@
-"""YuNet face detection wrapper.
+"""YuNet face detection via onnxruntime.
 
-This module is imported only when the user enables face detection in
-options, so `import cv2` happens lazily — disabled users pay zero RAM cost.
+Only imported when the user enables face detection in options, so
+`import onnxruntime` and `import PIL` happen lazily — disabled users
+pay zero RAM cost.
+
+We run the bundled YuNet 2023mar ONNX model directly via onnxruntime
+(no OpenCV dependency) so the integration works on Python 3.14 / HA
+2026.5+, where opencv-python-headless has no published wheel.
+
+Decoding follows OpenCV's reference `cv::FaceDetectorYN` implementation:
+- score per cell  = sqrt(cls * obj)   (cls/obj already in [0, 1])
+- bbox per cell   = (cx, cy) = (col + bbox[0], row + bbox[1]) * stride
+                    (w,  h)  = exp(bbox[2..3]) * stride
+                    (top-left form: x1 = cx - w/2, y1 = cy - h/2)
+- strides         = (8, 16, 32)  with a fixed 640×640 model input
+- NMS             = greedy IoU, threshold 0.3
 """
 from __future__ import annotations
 
-import io
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from io import BytesIO
 
 import numpy as np
-
-import cv2  # noqa: E402 — heavy import, deliberately at module level here
+import onnxruntime as ort
+from PIL import Image
 
 _LOGGER = logging.getLogger(__name__)
+
+_INPUT_W = 640
+_INPUT_H = 640
+_STRIDES = (8, 16, 32)
 
 
 @dataclass(slots=True)
@@ -45,89 +61,165 @@ class DetectionResult:
 
 
 class FaceDetector:
-    """Lazy-init YuNet face detector. Single-threaded; call from executor."""
+    """YuNet detector backed by onnxruntime."""
 
     def __init__(
         self,
         model_path: str,
         min_confidence: float = 0.6,
-        max_dimension: int = 1280,
+        max_dimension: int = 1280,  # accepted for API compat; model is fixed 640
         nms_threshold: float = 0.3,
-        top_k: int = 5000,
     ) -> None:
-        self._model_path = model_path
-        self._min_confidence = min_confidence
-        self._max_dimension = max_dimension
-        self._nms_threshold = nms_threshold
-        self._top_k = top_k
-        # FaceDetectorYN takes input size at construction; we re-create per
-        # image since photo aspect ratios vary.
-        self._cache_size: tuple[int, int] | None = None
-        self._detector: Any | None = None
+        del max_dimension  # silenced: model input is fixed at 640×640
+        self._min_confidence = float(min_confidence)
+        self._nms_threshold = float(nms_threshold)
 
-    def _detector_for(self, width: int, height: int) -> Any:
-        if self._cache_size == (width, height) and self._detector is not None:
-            return self._detector
-        self._detector = cv2.FaceDetectorYN.create(
-            model=self._model_path,
-            config="",
-            input_size=(width, height),
-            score_threshold=self._min_confidence,
-            nms_threshold=self._nms_threshold,
-            top_k=self._top_k,
+        sess_opts = ort.SessionOptions()
+        sess_opts.graph_optimization_level = (
+            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         )
-        self._cache_size = (width, height)
-        return self._detector
+        sess_opts.intra_op_num_threads = 1  # HA runs many things; be polite
+        self._session = ort.InferenceSession(
+            model_path,
+            sess_options=sess_opts,
+            providers=["CPUExecutionProvider"],
+        )
+        self._input_name = self._session.get_inputs()[0].name
+        self._output_names = [o.name for o in self._session.get_outputs()]
 
     def detect(self, image_bytes: bytes) -> DetectionResult:
         start = time.monotonic()
 
-        arr = np.frombuffer(image_bytes, dtype=np.uint8)
-        image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if image is None:
-            _LOGGER.warning("Failed to decode image bytes for face detection")
+        try:
+            img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        except Exception as err:  # noqa: BLE001 — Pillow error variants
+            _LOGGER.warning("Failed to decode image for face detection: %s", err)
             return DetectionResult([], 0, 0, 0)
 
-        orig_h, orig_w = image.shape[:2]
+        orig_w, orig_h = img.size
 
-        # Downscale if larger than max_dimension on the long edge — keeps
-        # detection fast and bounded. Normalized coords come out identical
-        # regardless of resize.
-        long_edge = max(orig_w, orig_h)
-        if long_edge > self._max_dimension:
-            scale = self._max_dimension / long_edge
-            new_w = int(orig_w * scale)
-            new_h = int(orig_h * scale)
-            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        else:
-            new_w, new_h = orig_w, orig_h
+        # Letterbox to 640×640: scale to fit, pad with neutral gray.
+        scale = min(_INPUT_W / orig_w, _INPUT_H / orig_h)
+        new_w = max(1, int(orig_w * scale))
+        new_h = max(1, int(orig_h * scale))
+        resized = img.resize((new_w, new_h), Image.BILINEAR)
+        canvas = Image.new("RGB", (_INPUT_W, _INPUT_H), (114, 114, 114))
+        canvas.paste(resized, (0, 0))
 
-        detector = self._detector_for(new_w, new_h)
-        _, faces = detector.detect(image)
+        # HWC RGB uint8 -> HWC BGR float32 -> CHW -> BCHW. YuNet was trained
+        # on OpenCV-style BGR with no normalization.
+        rgb = np.asarray(canvas, dtype=np.float32)
+        bgr = rgb[:, :, ::-1]
+        chw = np.ascontiguousarray(bgr.transpose(2, 0, 1)[np.newaxis])
 
-        boxes: list[FaceBox] = []
-        if faces is not None:
-            for row in faces:
-                # YuNet returns: x, y, w, h, 5 landmark coords (x,y x5), score
-                x, y, w, h = row[0:4]
-                score = float(row[-1])
-                # Normalize against the *resized* dimensions — bbox is in
-                # detection-image space, but normalized coords are identical
-                # to the original since we did a pure scale.
-                boxes.append(
-                    FaceBox(
-                        x=max(0.0, float(x) / new_w),
-                        y=max(0.0, float(y) / new_h),
-                        w=min(1.0, float(w) / new_w),
-                        h=min(1.0, float(h) / new_h),
-                        confidence=score,
-                    )
-                )
+        outputs = self._session.run(self._output_names, {self._input_name: chw})
+        # outputs come back in declaration order:
+        # cls_8, cls_16, cls_32, obj_8, obj_16, obj_32,
+        # bbox_8, bbox_16, bbox_32, kps_8, kps_16, kps_32
+        cls_outs = outputs[0:3]
+        obj_outs = outputs[3:6]
+        bbox_outs = outputs[6:9]
+
+        all_boxes: list[np.ndarray] = []
+        all_scores: list[np.ndarray] = []
+
+        for stride_idx, stride in enumerate(_STRIDES):
+            cls = cls_outs[stride_idx].reshape(-1)
+            obj = obj_outs[stride_idx].reshape(-1)
+            bbox = bbox_outs[stride_idx].reshape(-1, 4)
+
+            score = np.sqrt(np.clip(cls, 0.0, 1.0) * np.clip(obj, 0.0, 1.0))
+            mask = score >= self._min_confidence
+            if not mask.any():
+                continue
+
+            cols = _INPUT_W // stride
+            rows = _INPUT_H // stride
+            r_grid, c_grid = np.meshgrid(
+                np.arange(rows, dtype=np.float32),
+                np.arange(cols, dtype=np.float32),
+                indexing="ij",
+            )
+            r_flat = r_grid.reshape(-1)[mask]
+            c_flat = c_grid.reshape(-1)[mask]
+            bbox_m = bbox[mask]
+            score_m = score[mask]
+
+            cx = (c_flat + bbox_m[:, 0]) * stride
+            cy = (r_flat + bbox_m[:, 1]) * stride
+            w = np.exp(bbox_m[:, 2]) * stride
+            h = np.exp(bbox_m[:, 3]) * stride
+            x1 = cx - w / 2.0
+            y1 = cy - h / 2.0
+
+            all_boxes.append(np.stack([x1, y1, w, h], axis=1))
+            all_scores.append(score_m)
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        if not all_boxes:
+            return DetectionResult([], orig_w, orig_h, elapsed_ms)
+
+        boxes = np.concatenate(all_boxes, axis=0)
+        scores = np.concatenate(all_scores, axis=0)
+
+        keep = _nms(boxes, scores, self._nms_threshold)
+        if not keep:
+            return DetectionResult([], orig_w, orig_h, elapsed_ms)
+
+        boxes = boxes[keep]
+        scores = scores[keep]
+
+        # Boxes are in the 640×640 letterbox space — divide by the scale used
+        # for letterboxing to map back to original-pixel coords. Padding was
+        # at bottom/right only (paste at (0, 0)) so no offset to subtract.
+        boxes_orig = boxes / scale
+
+        faces: list[FaceBox] = []
+        for (x, y, bw, bh), s in zip(boxes_orig, scores, strict=False):
+            x_n = max(0.0, float(x) / orig_w)
+            y_n = max(0.0, float(y) / orig_h)
+            w_n = max(0.0, min(1.0 - x_n, float(bw) / orig_w))
+            h_n = max(0.0, min(1.0 - y_n, float(bh) / orig_h))
+            if w_n <= 0.0 or h_n <= 0.0:
+                continue
+            faces.append(
+                FaceBox(x=x_n, y=y_n, w=w_n, h=h_n, confidence=float(s))
+            )
+
         return DetectionResult(
-            faces=boxes,
+            faces=faces,
             image_width=orig_w,
             image_height=orig_h,
             detection_ms=elapsed_ms,
         )
+
+
+def _nms(
+    boxes: np.ndarray, scores: np.ndarray, iou_threshold: float
+) -> list[int]:
+    """Greedy IoU NMS. boxes are [x, y, w, h] in pixel coords."""
+    if boxes.size == 0:
+        return []
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = x1 + boxes[:, 2]
+    y2 = y1 + boxes[:, 3]
+    areas = boxes[:, 2] * boxes[:, 3]
+    order = scores.argsort()[::-1]
+    keep: list[int] = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+        w = np.maximum(0.0, xx2 - xx1)
+        h = np.maximum(0.0, yy2 - yy1)
+        inter = w * h
+        iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-9)
+        order = order[1:][iou < iou_threshold]
+    return keep

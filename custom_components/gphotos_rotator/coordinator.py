@@ -319,13 +319,11 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         persistent_notification.async_create(
             self.hass,
             (
-                "Face detection requires the `opencv-python-headless` Python "
-                "package, which currently has no wheel for Python 3.14 "
-                "(shipped with Home Assistant 2026.5+).\n\n"
-                "Face detection has been disabled. Either:\n"
-                "- Wait for an upstream OpenCV wheel for Python 3.14, or\n"
-                "- Wait for the integration's v0.3.x release which will "
-                "switch to onnxruntime (already has Python 3.14 wheels).\n\n"
+                "Face detection requires the `onnxruntime` Python package, "
+                "which HA should install automatically on first setup. The "
+                "install appears to have failed — check your HA logs for the "
+                "underlying pip error.\n\n"
+                "Face detection has been disabled for this session.\n\n"
                 f"Details: `{detail}`"
             ),
             title="Google Photos Rotator — face detection unavailable",
