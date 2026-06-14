@@ -90,10 +90,16 @@ The integration can detect faces in each rotated photo locally (no cloud calls) 
 
 **Enable**: Settings → Devices & services → Google Photos Rotator → **CONFIGURE** (the options dialog, not Reconfigure) → toggle **Enable face detection**.
 
-- Backend: bundled **YuNet 2023mar** ONNX model (~230 KB) run via **onnxruntime** (no OpenCV dependency — works on Python 3.14 / HA 2026.5+).
-- Cost: `onnxruntime` is ~15 MB wheel, ~50 MB on disk; ~40–60 MB RAM at runtime. Detection itself takes ~30–150 ms per photo on a Pi 4 / HA Yellow / Pi 5.
+- Backend: bundled **YuNet 2023mar** ONNX model (~230 KB) run via **onnxruntime** (no OpenCV dependency).
+- Cost when running: `onnxruntime` adds ~15 MB wheel / ~50 MB on disk / ~40–60 MB RAM. Detection itself takes ~30–150 ms per photo on a Pi 4 / HA Yellow / Pi 5.
 - The Python imports (`onnxruntime`, `numpy`, `PIL`) are **lazy** — disabled users pay zero RAM/CPU.
 - Letterboxes input to the model's fixed 640×640 size; bboxes are returned normalized 0–1 against the original image dimensions. Verified to match `cv2.FaceDetectorYN` reference output at IoU ≥ 0.80 across test images.
+
+> ⚠️ **Install-type compatibility (as of 2026-06):**
+> - **HA Container** (Debian base): `onnxruntime` is **not** auto-installed by the integration (no `requirements` entry, to keep the integration loadable everywhere). To enable face detection, install it once inside the HA Container yourself: `docker exec homeassistant pip install onnxruntime>=1.16.0`. Then enable the option.
+> - **HA OS / Supervised** (Alpine/musl + Python 3.14): no compatible `onnxruntime` wheel exists upstream and HA's own musllinux wheel infra hasn't published cp314 builds for any face detection lib yet. **Face detection cannot run in-process on this install type today.** Workarounds: use an external face detection service (CompreFace / DeepStack / Frigate) and consume its API via a separate HA integration, or switch to HA Container if you have flexibility.
+>
+> The integration itself loads normally on all install types — only the face detection sensor will be `unavailable` when the runtime isn't installable.
 
 **Sensor shape** (`sensor.<instance>_faces_count`):
 

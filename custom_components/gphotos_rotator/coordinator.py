@@ -319,11 +319,19 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         persistent_notification.async_create(
             self.hass,
             (
-                "Face detection requires the `onnxruntime` Python package, "
-                "which HA should install automatically on first setup. The "
-                "install appears to have failed — check your HA logs for the "
-                "underlying pip error.\n\n"
-                "Face detection has been disabled for this session.\n\n"
+                "Face detection needs the `onnxruntime` Python package, but "
+                "it isn't installed in this Home Assistant environment.\n\n"
+                "**Status on common install types (as of 2026-06):**\n"
+                "- **Home Assistant Container** (Debian-based image): "
+                "`onnxruntime` installs via pip — face detection works.\n"
+                "- **Home Assistant OS / Supervised** (Alpine/musl + Python "
+                "3.14): no compatible `onnxruntime` wheel exists yet. Face "
+                "detection cannot run in-process here. Use an external face "
+                "detection service (CompreFace, DeepStack, Frigate) instead, "
+                "or wait for upstream musllinux/cp314 wheels.\n\n"
+                "Face detection has been disabled for this session — the "
+                "rest of the integration (rotation, image entity, etc.) "
+                "continues to work normally.\n\n"
                 f"Details: `{detail}`"
             ),
             title="Google Photos Rotator — face detection unavailable",
