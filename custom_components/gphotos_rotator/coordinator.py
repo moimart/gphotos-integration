@@ -42,6 +42,10 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+class _FaceDetectorUnavailable(RuntimeError):
+    """Raised when cv2 (and therefore .face_detection) can't be imported."""
+
+
 def _items_fetched_at_from_entry(entry: ConfigEntry) -> datetime:
     raw = entry.data.get("items_fetched_at")
     if raw:
@@ -245,8 +249,15 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
 
         try:
             detector = await self._ensure_face_detector()
-        except Exception as err:  # noqa: BLE001 — import/model errors vary
-            _LOGGER.warning("Face detector unavailable: %s", err)
+        except _FaceDetectorUnavailable as err:
+            _LOGGER.warning(
+                "Face detector unavailable (%s); disabling for this session", err
+            )
+            self.face_detection_enabled = False
+            self.faces_detection_pending = False
+            return
+        except Exception as err:  # noqa: BLE001 — model load errors vary
+            _LOGGER.warning("Face detector init failed: %s", err)
             self.face_detection_enabled = False
             self.faces_detection_pending = False
             return
@@ -280,7 +291,13 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             return self._face_detector
 
         def _build() -> Any:
-            from .face_detection import FaceDetector
+            try:
+                from .face_detection import FaceDetector
+            except ImportError as err:
+                # Most likely cv2 not installed — Python 3.14 has no opencv
+                # wheel yet (HA 2026.5+). Tell the user via notification and
+                # disable the feature.
+                raise _FaceDetectorUnavailable(str(err)) from err
 
             model_path = os.path.join(
                 os.path.dirname(__file__), "models", FACE_MODEL_FILENAME
@@ -291,8 +308,31 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
                 max_dimension=self.face_max_dimension,
             )
 
-        self._face_detector = await self.hass.async_add_executor_job(_build)
+        try:
+            self._face_detector = await self.hass.async_add_executor_job(_build)
+        except _FaceDetectorUnavailable as err:
+            self._notify_face_detector_missing(str(err))
+            raise
         return self._face_detector
+
+    def _notify_face_detector_missing(self, detail: str) -> None:
+        persistent_notification.async_create(
+            self.hass,
+            (
+                "Face detection requires the `opencv-python-headless` Python "
+                "package, which currently has no wheel for Python 3.14 "
+                "(shipped with Home Assistant 2026.5+).\n\n"
+                "Face detection has been disabled. Either:\n"
+                "- Wait for an upstream OpenCV wheel for Python 3.14, or\n"
+                "- Wait for the integration's v0.3.x release which will "
+                "switch to onnxruntime (already has Python 3.14 wheels).\n\n"
+                f"Details: `{detail}`"
+            ),
+            title="Google Photos Rotator — face detection unavailable",
+            notification_id=(
+                f"{DOMAIN}_face_detector_missing_{self.entry.entry_id}"
+            ),
+        )
 
     async def async_apply_face_options(
         self,

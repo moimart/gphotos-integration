@@ -92,7 +92,10 @@ The integration can detect faces in each rotated photo locally (no cloud calls) 
 
 - Backend: OpenCV YuNet ONNX (bundled, ~230 KB). CPU-only, no GPU required.
 - Cost: ~50–70 MB RAM when enabled, 0 when disabled. ~30–150 ms per photo on a Pi 4 / HA Yellow / Pi 5.
-- The `opencv-python-headless` wheel (~120 MB on disk) is installed regardless, but `cv2` is **lazily imported** — disabled users pay zero RAM/CPU cost.
+
+> ⚠️ **Python 3.14 / HA 2026.5+ caveat (v0.2.x)**: OpenCV does not yet ship a Python 3.14 wheel (latest 4.13.0.92 stops at cp313). On HA versions running Python 3.14, the `opencv-python-headless` dependency cannot be auto-installed, so enabling face detection will surface a notification and the feature stays disabled. The integration itself loads normally; only the face detection sensor goes unavailable.
+>
+> A v0.3.x release will switch the backend from `cv2.FaceDetectorYN` to `onnxruntime` (which does have Python 3.14 wheels) running the same bundled YuNet ONNX model — same accuracy, same speed, no OpenCV dependency.
 
 **Sensor shape** (`sensor.<instance>_faces_count`):
 
