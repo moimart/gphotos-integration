@@ -54,7 +54,9 @@
           "face_detection": "Enable face detection",
           "face_service_url": "Face detector service URL",
           "face_service_token": "Bearer token (optional)",
-          "face_min_confidence": "Minimum detection confidence (0–1)"
+          "face_min_confidence": "Minimum detection confidence (0–1)",
+          "face_min_area_fraction": "Minimum face area as fraction of image (kills background heads — 0 = keep all)",
+          "face_max_count": "Max faces to keep (sorted by area; 0 = unlimited; 1 = main subject only)"
         }
       }
     }

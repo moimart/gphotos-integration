@@ -41,8 +41,15 @@ CONF_FACE_DETECTION = "face_detection"
 CONF_FACE_MIN_CONFIDENCE = "face_min_confidence"
 CONF_FACE_SERVICE_URL = "face_service_url"
 CONF_FACE_SERVICE_TOKEN = "face_service_token"
+# Main-subject filters (since v0.4.1). Applied to the service's response
+# in the coordinator so the filter can be tweaked without redeploying
+# the container.
+CONF_FACE_MIN_AREA_FRACTION = "face_min_area_fraction"
+CONF_FACE_MAX_COUNT = "face_max_count"
 DEFAULT_FACE_DETECTION = False
 DEFAULT_FACE_MIN_CONFIDENCE = 0.6
+DEFAULT_FACE_MIN_AREA_FRACTION = 0.02  # drop faces smaller than 2% of frame
+DEFAULT_FACE_MAX_COUNT = 0  # 0 = unlimited
 # Sensible default for HA OS / Supervised: the slug of the bundled
 # add-on resolves to this hostname on HA's internal Docker network.
 # Users running the service standalone elsewhere will need to override.

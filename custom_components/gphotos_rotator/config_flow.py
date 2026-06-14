@@ -27,11 +27,15 @@ from homeassistant.util import dt as dt_util
 from .api import PickerApiError, PickerClient
 from .const import (
     CONF_FACE_DETECTION,
+    CONF_FACE_MAX_COUNT,
+    CONF_FACE_MIN_AREA_FRACTION,
     CONF_FACE_MIN_CONFIDENCE,
     CONF_FACE_SERVICE_TOKEN,
     CONF_FACE_SERVICE_URL,
     CONF_MEDIA_ITEMS,
     DEFAULT_FACE_DETECTION,
+    DEFAULT_FACE_MAX_COUNT,
+    DEFAULT_FACE_MIN_AREA_FRACTION,
     DEFAULT_FACE_MIN_CONFIDENCE,
     DEFAULT_FACE_SERVICE_URL,
     DEFAULT_INTERVAL,
@@ -294,6 +298,27 @@ class GPhotosOptionsFlowHandler(OptionsFlow):
                     ): NumberSelector(
                         NumberSelectorConfig(
                             min=0.1, max=1.0, step=0.05, mode=NumberSelectorMode.SLIDER
+                        )
+                    ),
+                    vol.Required(
+                        CONF_FACE_MIN_AREA_FRACTION,
+                        default=current.get(
+                            CONF_FACE_MIN_AREA_FRACTION,
+                            DEFAULT_FACE_MIN_AREA_FRACTION,
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.0, max=0.5, step=0.005, mode=NumberSelectorMode.SLIDER
+                        )
+                    ),
+                    vol.Required(
+                        CONF_FACE_MAX_COUNT,
+                        default=current.get(
+                            CONF_FACE_MAX_COUNT, DEFAULT_FACE_MAX_COUNT
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0, max=20, step=1, mode=NumberSelectorMode.BOX
                         )
                     ),
                 }

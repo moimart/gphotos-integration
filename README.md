@@ -121,6 +121,20 @@ curl -X POST --data-binary @photo.jpg http://<host>:8127/v1/detect | jq
 
 Service source and Dockerfile live in [`service/`](service/) in this repo; the HA add-on wrapper lives in [`addons/gphotos_face_detector/`](addons/gphotos_face_detector/). Resource footprint: ~250 MB image on disk, ~80–120 MB RAM idle, <0.5 % CPU at the default 60 s rotation cadence.
 
+#### Focusing on the main subject (since v0.4.1)
+
+Two integration-side filters drop background / crowd faces, applied after the service returns the raw bbox list:
+
+- **Minimum face area as fraction of image** (default `0.02` = 2% of frame). Any detected face whose normalized bbox area `w × h` is below this is dropped. `0` keeps everything.
+- **Max faces to keep** (default `0` = unlimited). After area filtering, faces are sorted largest-first and the top N are kept. Set to `1` to expose only the main subject.
+
+Examples:
+- Family photos, drop background heads only: `min_area_fraction=0.02, max_count=0` (default).
+- "Always pan to the biggest face": `min_area_fraction=0, max_count=1`.
+- Group portrait, ignore distant photobombers: `min_area_fraction=0.05, max_count=0`.
+
+Filtering happens at read time over a cached *raw* detection result, so changing the knobs takes effect on the currently-displayed photo without re-calling the detector.
+
 **Sensor shape** (`sensor.<instance>_faces_count`):
 
 ```yaml

@@ -22,6 +22,8 @@ from .api import AuthError, PickerApiError, PickerClient, SessionExpiredError
 from .const import (
     BASE_URL_TTL_SECONDS,
     CONF_FACE_DETECTION,
+    CONF_FACE_MAX_COUNT,
+    CONF_FACE_MIN_AREA_FRACTION,
     CONF_FACE_MIN_CONFIDENCE,
     CONF_FACE_SERVICE_TOKEN,
     CONF_FACE_SERVICE_URL,
@@ -29,6 +31,8 @@ from .const import (
     CONF_MEDIA_ITEMS,
     CONF_ORDER,
     DEFAULT_FACE_DETECTION,
+    DEFAULT_FACE_MAX_COUNT,
+    DEFAULT_FACE_MIN_AREA_FRACTION,
     DEFAULT_FACE_MIN_CONFIDENCE,
     DEFAULT_FACE_SERVICE_URL,
     DEFAULT_IMAGE_SIZE,
@@ -92,6 +96,12 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         )
         self.face_service_token: str = entry.options.get(
             CONF_FACE_SERVICE_TOKEN, ""
+        )
+        self.face_min_area_fraction: float = entry.options.get(
+            CONF_FACE_MIN_AREA_FRACTION, DEFAULT_FACE_MIN_AREA_FRACTION
+        )
+        self.face_max_count: int = entry.options.get(
+            CONF_FACE_MAX_COUNT, DEFAULT_FACE_MAX_COUNT
         )
         self.current_faces: list[dict[str, float]] = []
         self.faces_detection_pending: bool = False
@@ -243,7 +253,7 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         cached = self._face_cache.get(media_id)
         if cached is not None:
             self._face_cache.move_to_end(media_id)
-            self.current_faces = cached["faces"]
+            self.current_faces = self._filter_faces(cached["faces"])
             self.faces_detection_ms = cached["detection_ms"]
             self.faces_image_width = cached["image_width"]
             self.faces_image_height = cached["image_height"]
@@ -270,22 +280,53 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             self._face_detector = None
             return
 
-        faces = [f.as_dict() for f in result.faces]
-        self.current_faces = faces
-        self.faces_detection_ms = result.detection_ms
-        self.faces_image_width = result.image_width
-        self.faces_image_height = result.image_height
-        self.faces_detection_pending = False
-
+        # Cache the RAW (pre-filter) face list so changing main-subject
+        # filters takes effect immediately without re-detecting cached
+        # photos.
+        raw_faces = [f.as_dict() for f in result.faces]
         if media_id:
             self._face_cache[media_id] = {
-                "faces": faces,
+                "faces": raw_faces,
                 "detection_ms": result.detection_ms,
                 "image_width": result.image_width,
                 "image_height": result.image_height,
             }
             while len(self._face_cache) > FACE_CACHE_MAX:
                 self._face_cache.popitem(last=False)
+
+        self.current_faces = self._filter_faces(raw_faces)
+        self.faces_detection_ms = result.detection_ms
+        self.faces_image_width = result.image_width
+        self.faces_image_height = result.image_height
+        self.faces_detection_pending = False
+
+    def _filter_faces(
+        self, faces: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        """Apply main-subject filters.
+
+        1. Drop faces whose normalized bbox area is below
+           `face_min_area_fraction` (kills crowd/background heads).
+        2. Sort the remainder by area descending and keep the top
+           `face_max_count` (0 = unlimited). Set to 1 for "main subject only".
+        """
+        if not faces:
+            return faces
+
+        min_area = float(self.face_min_area_fraction or 0.0)
+        if min_area > 0:
+            kept = [f for f in faces if f["w"] * f["h"] >= min_area]
+        else:
+            kept = list(faces)
+
+        if not kept:
+            return kept
+
+        max_count = int(self.face_max_count or 0)
+        if max_count > 0 and len(kept) > max_count:
+            kept.sort(key=lambda f: f["w"] * f["h"], reverse=True)
+            kept = kept[:max_count]
+        return kept
 
     async def _ensure_face_detector(self) -> Any:
         if self._face_detector is not None:
@@ -352,20 +393,30 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
         min_confidence: float,
         service_url: str,
         service_token: str,
+        min_area_fraction: float,
+        max_count: int,
     ) -> None:
         prev_enabled = self.face_detection_enabled
         prev_url = self.face_service_url
         prev_token = self.face_service_token
+        prev_min_confidence = self.face_min_confidence
         self.face_detection_enabled = enabled
         self.face_min_confidence = min_confidence
         self.face_service_url = service_url
         self.face_service_token = service_token
+        self.face_min_area_fraction = min_area_fraction
+        self.face_max_count = max_count
 
-        # Invalidate detector if any setting changed; cache too.
+        # Invalidate detector if a *service-side* setting changed.
+        # face_min_confidence is server-side too (passed as a query param).
+        # face_min_area_fraction / face_max_count are integration-side
+        # filters — applied at read time over the cached raw faces, so
+        # they don't invalidate the cache.
         if (
             prev_url != service_url
             or prev_token != service_token
             or prev_enabled != enabled
+            or prev_min_confidence != min_confidence
         ):
             self._face_detector = None
             self._face_cache.clear()
@@ -383,6 +434,12 @@ class GPhotosCoordinator(DataUpdateCoordinator[None]):
             await self._run_face_detection(
                 self.current_item.get("id") or "", self.current_bytes
             )
+        elif self.current_item is not None:
+            # Only filter knobs changed — re-filter the cached raw faces
+            # for the current photo without re-detecting.
+            cached = self._face_cache.get(self.current_item.get("id") or "")
+            if cached is not None:
+                self.current_faces = self._filter_faces(cached["faces"])
         self.async_update_listeners()
 
     async def async_set_order(self, order: str) -> None:
