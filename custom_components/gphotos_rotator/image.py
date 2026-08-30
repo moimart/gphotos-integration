@@ -13,6 +13,23 @@ from .const import DOMAIN
 from .coordinator import GPhotosCoordinator
 
 
+def _taken_at(item: dict[str, object]) -> str | None:
+    """Capture time of the item, or None when it can't be trusted.
+
+    The Picker API always fills createTime, silently substituting the
+    upload time when the file has no EXIF. It doesn't flag which one you
+    got, so camera EXIF fields in mediaFileMetadata (absent for
+    screenshots, scans, messenger saves) are the evidence that createTime
+    is a real capture date.
+    """
+    media_file = item.get("mediaFile") or {}
+    meta = media_file.get("mediaFileMetadata") or {}
+    has_exif = any(
+        meta.get(key) for key in ("cameraMake", "cameraModel", "photoMetadata")
+    )
+    return item.get("createTime") if has_exif else None
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -58,6 +75,7 @@ class NextPhotoImage(CoordinatorEntity[GPhotosCoordinator], ImageEntity):
         attrs: dict[str, object] = {
             "filename": media_file.get("filename"),
             "media_item_id": item.get("id"),
+            "taken_at": _taken_at(item) if item else None,
             "media_count": len(self.coordinator.media_items),
             "order": self.coordinator.order,
             "interval_seconds": self.coordinator.interval,
