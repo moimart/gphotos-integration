@@ -158,6 +158,14 @@ Coordinates are **normalized 0–1** (multiply by your display width/height). `d
 - *Minimum detection confidence* (default 0.6): filter out weak detections.
 - *Max image dimension* (default 1280 px on the long edge): the integration downscales before detection for speed; coordinates stay normalized so this only affects latency and detection of very small faces.
 
+### Multiple instances (since v0.5.0)
+
+You can add the integration as many times as you like — one photo selection per entry (e.g. one per album, or one per wall panel). All entries can share the same Application Credentials and the same Google account; each holds its own OAuth token and picker session.
+
+- The config flow ends with a **naming step** — give each instance a recognizable name ("Family album", "Vacations"...). The name becomes the device name and is used in the session-expired / re-pick notifications so you can tell instances apart.
+- If an entry's token has expired by the time you press **Configure** (common in *Testing* mode, see Troubleshooting), the flow now re-runs the Google sign-in inline and then continues to the picker — no need to remove and re-add the entry.
+- Note that the Picker API's 10k requests/day quota is **per OAuth client**, so instances sharing credentials share it. Two instances at the default 60 s interval use ~3k/day — fine; just don't push many instances to very short intervals.
+
 ### Re-picking photos
 
 Two equivalent paths:
@@ -170,7 +178,7 @@ The integration auto-detects when you've finished picking and swaps in the new p
 ## Troubleshooting
 
 - **"Selection not detected yet"** — confirm your pick inside Google Photos first; the integration only sees the selection after you finish in the picker.
-- **No image bytes / 401 errors** — your refresh token may have been revoked; remove the integration and re-add.
+- **No image bytes / 401 errors** — your refresh token may have been revoked; press **Configure** on the entry (it re-authenticates inline if needed), or use the reauth banner.
 - **"Picker session expired"** notification — sessions live ~24h; press Re-pick to start fresh.
 - **"Re-authentication required" banner in HA** — Google revokes OAuth refresh tokens for apps in *Testing* mode roughly every 7 days, and any user can manually revoke at <https://myaccount.google.com/permissions>. When this happens HA detects the 401 from Google, marks the entry as needing reauth, and shows a yellow banner on the integrations page. Click **Reconfigure** there to sign in again — your photo selection is preserved.
 - **App stuck in "verification needed"** by Google — for personal use leave the consent screen in *Testing* mode and add yourself as a Test user; that bypasses verification.

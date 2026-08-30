@@ -66,6 +66,8 @@ class GPhotosOAuth2FlowHandler(
         self._session_id: str | None = None
         self._picker_uri: str | None = None
         self._title: str = "Google Photos Rotator"
+        self._entry_data: dict[str, Any] | None = None
+        self._entry_options: dict[str, Any] | None = None
 
     @property
     def logger(self) -> logging.Logger:
@@ -126,9 +128,18 @@ class GPhotosOAuth2FlowHandler(
         try:
             await oauth_session.async_ensure_token_valid()
         except Exception as err:  # noqa: BLE001 — token refresh errors vary
-            _LOGGER.error("Token refresh failed during reconfigure: %s", err)
-            return self.async_abort(reason="token_refresh_failed")
+            # Dead refresh token (e.g. Testing-mode 7-day expiry). Re-run
+            # the OAuth dance inside this reconfigure flow instead of
+            # dead-ending; async_oauth_create_entry routes back to
+            # pick_media and _finish persists the fresh token.
+            _LOGGER.warning(
+                "Token refresh failed during reconfigure (%s); "
+                "starting re-authentication",
+                err,
+            )
+            return await self.async_step_user()
 
+        self.flow_impl = implementation
         self._oauth_data = {
             "token": oauth_session.token,
             "auth_implementation": entry.data.get("auth_implementation"),
@@ -186,8 +197,16 @@ class GPhotosOAuth2FlowHandler(
 
         if self.source == SOURCE_RECONFIGURE:
             entry = self._get_reconfigure_entry()
+            # Free the superseded session server-side — Google caps active
+            # picker sessions per user (RESOURCE_EXHAUSTED). Best-effort.
+            old_session_id = entry.data.get("session_id")
+            if old_session_id and old_session_id != self._session_id:
+                await client.delete_session(old_session_id)
+            # Merge _oauth_data too: if reconfigure went through a fresh
+            # OAuth dance (dead token), this persists the new token.
             new_data = {
                 **entry.data,
+                **(self._oauth_data or {}),
                 "session_id": self._session_id,
                 CONF_MEDIA_ITEMS: items,
                 "items_fetched_at": dt_util.utcnow().isoformat(),
@@ -198,20 +217,35 @@ class GPhotosOAuth2FlowHandler(
                 reason="reconfigure_successful",
             )
 
-        data = {
+        self._entry_data = {
             **self._oauth_data,
             "session_id": self._session_id,
             CONF_MEDIA_ITEMS: items,
             "items_fetched_at": dt_util.utcnow().isoformat(),
         }
-        options = {
+        self._entry_options = {
             "interval": DEFAULT_INTERVAL,
             "order": DEFAULT_ORDER,
         }
-        return self.async_create_entry(
-            title=self._title,
-            data=data,
-            options=options,
+        return await self.async_step_name()
+
+    async def async_step_name(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Name the instance — the integration supports multiple entries
+        (one photo selection each), so titles must be distinguishable."""
+        assert self._entry_data is not None
+        if user_input is not None:
+            return self.async_create_entry(
+                title=user_input["name"].strip() or self._title,
+                data=self._entry_data,
+                options=self._entry_options or {},
+            )
+        return self.async_show_form(
+            step_id="name",
+            data_schema=vol.Schema(
+                {vol.Required("name", default=self._title): str}
+            ),
         )
 
     def _build_client(self, oauth_data: dict[str, Any]) -> PickerClient:

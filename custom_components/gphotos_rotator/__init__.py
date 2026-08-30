@@ -106,6 +106,32 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the entry's picker session server-side (best-effort).
+
+    Google caps active picker sessions per user; orphaned sessions from
+    removed entries count against that cap.
+    """
+    session_id = entry.data.get("session_id")
+    if not session_id:
+        return
+    try:
+        implementation = (
+            await config_entry_oauth2_flow.async_get_config_entry_implementation(
+                hass, entry
+            )
+        )
+        oauth_session = config_entry_oauth2_flow.OAuth2Session(
+            hass, entry, implementation
+        )
+        await oauth_session.async_ensure_token_valid()
+        await PickerClient(oauth_session).delete_session(session_id)
+    except Exception:  # noqa: BLE001 — cleanup must never block removal
+        _LOGGER.debug(
+            "Could not delete picker session on entry removal", exc_info=True
+        )
+
+
 def _coord_for_entity(
     hass: HomeAssistant, entity_id: str
 ) -> GPhotosCoordinator | None:
